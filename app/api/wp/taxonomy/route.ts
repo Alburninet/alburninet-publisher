@@ -1,0 +1,3 @@
+import { NextRequest, NextResponse } from "next/server";
+import { searchTaxonomy, createTaxonomy } from "@/lib/wp";
+export async function GET(req: NextRequest){const { searchParams }=new URL(req.url);const type=(searchParams.get("type") as "categories"|"tags")||"categories";const q=String(searchParams.get("q")||"");const perPage=parseInt(String(searchParams.get("per_page")||"100"));const items=await searchTaxonomy(type,q,perPage);return NextResponse.json(items);}export async function POST(req: NextRequest){const {type,name}=await req.json();const item=await createTaxonomy(type,name);return NextResponse.json(item);}
