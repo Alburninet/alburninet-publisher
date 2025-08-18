@@ -1,1 +1,21 @@
-node_modules
+# Dipendenze e build
+node_modules/
+.next/
+out/
+dist/
+build/
+.vercel/
+
+# Ambiente / segreti
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
+
+# Vari
+coverage/
