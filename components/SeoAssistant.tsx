@@ -1,99 +1,137 @@
 "use client";
-import { useMemo, useEffect } from "react";
-import { firstParagraph, countWords, keywordDensity, countLinksMd, countImagesMd, countHeadings, gulpeaseIndex } from "@/lib/seo";
 
-type Check = { ok: boolean; label: string };
+import { useEffect, useMemo } from "react";
+
+type Check = { ok: boolean; label: string; hint?: string };
+
+function stripHtml(html: string): string {
+  if (!html) return "";
+  // Rimuovi script/style
+  html = html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "");
+  // Sostituisci </p> e <br> con separatori
+  html = html.replace(/<\/p>/gi, ". ").replace(/<br\s*\/?>/gi, " ");
+  // Rimuovi i tag rimanenti
+  const text = html.replace(/<[^>]+>/g, " ");
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function countSentences(text: string): number {
+  if (!text) return 0;
+  // FIX: niente backslash davanti a "…" (ellissi)
+  const parts = text.split(/(?<=[.!?…])\s+/u).filter(s => s.trim().length > 0);
+  return parts.length;
+}
+
+function countWords(text: string): number {
+  if (!text) return 0;
+  const words = text.match(/[A-Za-zÀ-ÖØ-öø-ÿ0-9’']+/gu);
+  return words ? words.length : 0;
+}
+
+function countLetters(text: string): number {
+  if (!text) return 0;
+  const letters = text.match(/[A-Za-zÀ-ÖØ-öø-ÿ]/gu);
+  return letters ? letters.length : 0;
+}
+
+/** Gulpease: 89 + (300*frasi - 10*lettere) / parole  — 0..100 (alto=facile) */
+function gulpeaseIndex(text: string): { value: number | null; sentences: number; words: number; letters: number } {
+  const sentences = countSentences(text);
+  const words = countWords(text);
+  const letters = countLetters(text);
+  if (sentences === 0 || words === 0) return { value: null, sentences, words, letters };
+  const value = 89 + (300 * sentences - 10 * letters) / Math.max(1, words);
+  const v = Math.max(0, Math.min(100, Math.round(value)));
+  return { value: v, sentences, words, letters };
+}
+
+function hasH2(html: string) {
+  return /<h2(\s|>)/i.test(html);
+}
+function imageAltCoverage(html: string) {
+  const imgs = html.match(/<img\b[^>]*>/gi) || [];
+  if (imgs.length === 0) return { withAlt: 0, total: 0 };
+  let withAlt = 0;
+  for (const tag of imgs) {
+    const m = tag.match(/alt\s*=\s*"(.*?)"/i);
+    if (m && m[1].trim().length > 0) withAlt++;
+  }
+  return { withAlt, total: imgs.length };
+}
+function linkStats(html: string) {
+  const links = html.match(/<a\b[^>]*href="([^"]+)"[^>]*>/gi) || [];
+  let internal = 0, external = 0;
+  for (const a of links) {
+    const m = a.match(/href="([^"]+)"/i);
+    if (!m) continue;
+    const href = m[1];
+    if (/^https?:\/\/(www\.)?alburninet\.it/i.test(href) || href.startsWith("/") || href.startsWith("#")) internal++;
+    else external++;
+  }
+  return { total: links.length, internal, external };
+}
 
 export default function SeoAssistant({
-  title, slug, contentMd, seoTitle, seoDescription, focusKw,
-  onScoreChange
+  title,
+  slug,
+  contentHtml,           // ⬅️ HTML dal tuo editor
+  seoTitle,
+  seoDescription,
+  focusKw,
+  onScoreChange,
 }: {
-  title: string; slug?: string; contentMd: string; seoTitle?: string; seoDescription?: string; focusKw?: string;
+  title: string;
+  slug: string;
+  contentHtml: string;
+  seoTitle: string;
+  seoDescription: string;
+  focusKw: string;
   onScoreChange?: (score: number, checks: Check[]) => void;
 }) {
-  function lenOk(str: string | undefined, min: number, max: number) {
-    const n = (str || "").trim().length;
-    return n >= min && n <= max;
-  }
+  const text = useMemo(() => stripHtml(contentHtml), [contentHtml]);
 
-  const data = useMemo(() => {
-    const t = (title || "").trim();
-    const s = (slug || "").trim();
-    const md = (contentMd || "");
-    const st = (seoTitle || "").trim();
-    const sd = (seoDescription || "").trim();
-    const kw = (focusKw || "").trim();
+  const gul = useMemo(() => gulpeaseIndex(text), [text]);
+  const links = useMemo(() => linkStats(contentHtml || ""), [contentHtml]);
+  const img = useMemo(() => imageAltCoverage(contentHtml || ""), [contentHtml]);
 
-    const inputsEmpty = !t && !s && !md.trim() && !st && !sd && !kw;
-    if (inputsEmpty) {
-      const labels = [
-        "Titolo presente","SEO Title 35–60 caratteri","Meta Description 80–160 caratteri",
-        "Keyword focus impostata","Keyword nel titolo","Keyword nello slug","Keyword nel primo paragrafo",
-        "Lunghezza contenuto ≥ 300 parole","Densità keyword 0.5–2.5%","Almeno 2 H2",
-        "Struttura con sottosezioni (H3 o più H2)","≥ 1 link interno","≥ 1 link esterno",
-        "≥ 1 immagine","Alt per tutte le immagini","Almeno un alt con keyword","Leggibilità (Gulpease) ≥ 40",
-      ];
-      const checks: Check[] = labels.map(label => ({ ok: false, label }));
-      return {
-        checks, score: 0, words: 0,
-        dens: { hits: 0, density: 0 },
-        links: { internal: 0, external: 0, total: 0 },
-        imgs: { count: 0, withAlt: 0, altWithKw: 0 },
-        heads: { h2: 0, h3: 0 },
-        gul: 0
-      };
-    }
+  const titleLen = (seoTitle || title || "").trim().length;
+  const descLen  = (seoDescription || "").trim().length;
 
-    const fp = firstParagraph(md);
-    const words = countWords(md);
-    const dens = keywordDensity(md, kw);
-    const links = countLinksMd(md);
-    const imgs = countImagesMd(md, kw);
-    const heads = countHeadings(md);
-    const gul = words > 0 ? gulpeaseIndex(md) : 0;
+  const containsKw = (s: string) =>
+    (focusKw || "").length > 0 && s.toLowerCase().includes(focusKw.toLowerCase());
 
-    const checks: Check[] = [
-      { ok: !!t, label: "Titolo presente" },
-      { ok: lenOk(st || t, 35, 60) && !!(st || t).trim(), label: "SEO Title 35–60 caratteri" },
-      { ok: lenOk(sd, 80, 160) && !!sd, label: "Meta Description 80–160 caratteri" },
-      { ok: !!kw, label: "Keyword focus impostata" },
-      { ok: !!kw && t.toLowerCase().includes(kw.toLowerCase()), label: "Keyword nel titolo" },
-      { ok: !!kw && s.toLowerCase().includes(kw.toLowerCase()), label: "Keyword nello slug" },
-      { ok: !!kw && fp.toLowerCase().includes(kw.toLowerCase()), label: "Keyword nel primo paragrafo" },
-      { ok: words >= 300, label: "Lunghezza contenuto ≥ 300 parole" },
-      { ok: !!kw && words > 0 && dens.density >= 0.5 && dens.density <= 2.5, label: `Densità keyword 0.5–2.5% (attuale ${isFinite(dens.density) ? dens.density.toFixed(2) : 0}%)` },
-      { ok: heads.h2 >= 2, label: "Almeno 2 H2" },
-      { ok: heads.h3 >= 1 || heads.h2 >= 3, label: "Struttura con sottosezioni (H3 o più H2)" },
-      { ok: links.internal >= 1, label: "≥ 1 link interno" },
-      { ok: links.external >= 1, label: "≥ 1 link esterno" },
-      { ok: imgs.count >= 1, label: "≥ 1 immagine" },
-      { ok: imgs.count > 0 && imgs.withAlt >= imgs.count, label: "Alt per tutte le immagini" },
-      { ok: !!kw && imgs.altWithKw >= 1, label: "Almeno un alt con keyword" },
-      { ok: words > 0 && gul >= 40, label: `Leggibilità (Gulpease) ≥ 40 (attuale ${gul})` },
-    ];
+  const checks: Check[] = [
+    { ok: titleLen >= 35 && titleLen <= 60, label: `Titolo SEO 35–60 (attuale ${titleLen})`, hint: "Ottimizza la lunghezza del titolo." },
+    { ok: descLen >= 80 && descLen <= 160, label: `Meta-description 80–160 (attuale ${descLen})`, hint: "Rendi la descrizione informativa e concisa." },
+    { ok: !!hasH2(contentHtml || ""), label: "Almeno un H2 presente", hint: "Aggiungi sottotitoli H2 per la struttura." },
+    { ok: img.total === 0 || img.withAlt === img.total, label: `ALT immagini (${img.withAlt}/${img.total})`, hint: "Aggiungi alt descrittivi alle immagini." },
+    { ok: links.total >= 1 && links.external >= 1, label: `Link (tot: ${links.total}, ext: ${links.external})`, hint: "Aggiungi almeno 1 link esterno autorevole." },
+    { ok: containsKw(seoTitle || title || ""), label: "Keyword nel titolo", hint: "Inserisci la focus keyword nel titolo." },
+    { ok: containsKw(seoDescription || ""), label: "Keyword nella description", hint: "Inserisci la focus keyword nella meta description." },
+    { ok: gul.value === null ? true : gul.value >= 40, label: `Leggibilità (Gulpease) ≥ 40 (attuale ${gul.value === null ? "N/D" : gul.value})`, hint: "Frasi più corte, parole semplici." },
+  ];
 
-    const score = Math.round((checks.filter(c => c.ok).length / checks.length) * 100);
-    return { checks, score, words, dens: { hits: dens.hits, density: dens.density }, links, imgs, heads, gul };
-  }, [title, slug, contentMd, seoTitle, seoDescription, focusKw]);
+  const score = Math.round((checks.filter(c => c.ok).length / checks.length) * 100);
 
   useEffect(() => {
-    if (onScoreChange) onScoreChange(data.score, data.checks);
+    onScoreChange?.(score, checks);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data.score, JSON.stringify(data.checks)]);
+  }, [score, contentHtml, seoTitle, seoDescription, title, slug, focusKw]);
 
   return (
-    <div className="border rounded-2xl p-4 bg-white grid gap-3">
-      <div className="flex items-center justify-between">
-        <h3 className="font-semibold">Assistente SEO</h3>
-        <span className="text-sm px-2 py-1 rounded-full border">Score: {data.score}%</span>
+    <div className="bg-white border rounded-2xl p-4">
+      <h3 className="font-semibold mb-2">Assistente SEO</h3>
+      <div className="text-sm text-gray-600 mb-3">
+        Score stimato: <strong>{score}%</strong>{" "}
+        {gul.value !== null
+          ? <span className="ml-2">• Gulpease: <strong>{gul.value}</strong> (frasi {gul.sentences}, parole {gul.words})</span>
+          : <span className="ml-2">• Gulpease: <strong>N/D</strong></span>}
       </div>
-      <div className="text-sm grid gap-1">
-        <p>Parole: <strong>{data.words}</strong> · Densità KW: <strong>{isFinite(data.dens.density) ? data.dens.density.toFixed(2) : 0}%</strong> · Gulpease: <strong>{data.gul}</strong></p>
-      </div>
-      <ul className="grid gap-1 text-sm">
-        {data.checks.map((c, i) => (
-          <li key={i} className={c.ok ? "text-green-700" : "text-gray-800"}>
-            {c.ok ? "✓" : "•"} {c.label}
+      <ul className="space-y-1 text-sm">
+        {checks.map((c, i) => (
+          <li key={i} className="flex items-start gap-2">
+            <span className={`mt-0.5 inline-block h-2.5 w-2.5 rounded-full ${c.ok ? "bg-green-600" : "bg-amber-600"}`} />
+            <span>{c.label}{c.hint ? <span className="text-gray-500"> — {c.hint}</span> : null}</span>
           </li>
         ))}
       </ul>

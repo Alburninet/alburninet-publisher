@@ -1,427 +1,567 @@
 "use client";
-import { useRef, useState, useEffect, useMemo } from "react";
-import { useRouter } from "next/navigation";
-import NavBar from "@/components/NavBar";
+
+import React, { useEffect, useMemo, useState } from "react";
+import TinyEditor from "@/components/TinyEditor";
 import SeoAssistant from "@/components/SeoAssistant";
 import SerpPreview from "@/components/SerpPreview";
-import RichTextEditor from "@/components/RichTextEditor";
-import TagsPanel, { TagItem } from "@/components/TagsPanel";
-import ArticlePreview from "@/components/ArticlePreview";
-import { slugify, suggestMetaDescription, firstParagraph } from "@/lib/seo";
 
-type WPCategory = { id: number; name: string };
-type Check = { ok: boolean; label: string };
+type WpTaxItem = { id: number; name: string; slug: string };
 
-const SEO_MIN_SCORE_PUBLISH = 60;
+type FormState = {
+  title: string;
+  excerpt: string; // meta-description
+  contentHtml: string;
+  categories: number[];
+  tags: string[];            // ← tag come testo (chip)
+  focusKw: string;           // ← keyphrase principale per Yoast/SEO
+  featuredMediaId?: number;
+  featuredMediaUrl?: string;
+};
+
+const emptyForm: FormState = {
+  title: "",
+  excerpt: "",
+  contentHtml: "",
+  categories: [],
+  tags: [],
+  focusKw: "",
+  featuredMediaId: undefined,
+  featuredMediaUrl: undefined,
+};
+
+// URL WordPress da env (per eventuale Media Library popup)
+const WP_URL = (process.env.NEXT_PUBLIC_WP_URL || "").replace(/\/$/, "");
+
+// util per slug (Assistant SEO)
+function slugify(input: string) {
+  return input
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "")
+    .slice(0, 90);
+}
+
+/** (Opzionale) apre popup wp-admin per la Media Library – lasciato com’è */
+function openWpMediaPicker() {
+  if (!WP_URL) {
+    alert("Config mancante: NEXT_PUBLIC_WP_URL");
+    return;
+  }
+  const origin = window.location.origin;
+  const pickerUrl = `${WP_URL}/wp-admin/admin.php?page=alburninet-media-picker&origin=${encodeURIComponent(
+    origin
+  )}`;
+  const w = 980;
+  const h = 800;
+  const left = window.screenX + (window.outerWidth - w) / 2;
+  const top = window.screenY + (window.outerHeight - h) / 2;
+  window.open(
+    pickerUrl,
+    "alburninetMediaPicker",
+    `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`
+  );
+}
+
+/** (Opzionale) bridge per ricevere dal popup l’allegato selezionato */
+function MediaPickerBridge({
+  onPicked,
+}: {
+  onPicked: (att: { id: number; url: string; alt?: string }) => void;
+}) {
+  React.useEffect(() => {
+    function handler(ev: MessageEvent) {
+      const data = ev.data;
+      if (!data || data.type !== "ALBURNINET_MEDIA_PICKED") return;
+      try {
+        const a = data.attachment || {};
+        if (a.id && a.url) onPicked({ id: a.id, url: a.url, alt: a.alt });
+      } catch {}
+    }
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [onPicked]);
+
+  return null;
+}
 
 export default function ComposePage() {
-  const router = useRouter();
-  const formRef = useRef<HTMLFormElement | null>(null);
+  const [form, setForm] = useState<FormState>(emptyForm);
+  const [cats, setCats] = useState<WpTaxItem[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  // Campi unificati
-  const [title, setTitle] = useState("");     // = SEO Title
-  const [excerpt, setExcerpt] = useState(""); // = Meta Description
-  const [contentHtml, setContentHtml] = useState<string>("<p></p>");
-  const [slug, setSlug] = useState("");
-  const [seoFocus, setSeoFocus] = useState("");
+  // Autocomplete TAGS
+  const [tagQuery, setTagQuery] = useState("");
+  const [tagSuggestions, setTagSuggestions] = useState<WpTaxItem[]>([]);
+  const [showTagSug, setShowTagSug] = useState(false);
 
-  // Tassonomie
-  const [categories, setCategories] = useState<WPCategory[]>([]);
-  const [selectedCategories, setSelectedCategories] = useState<number[]>([]);
-  const [tags, setTags] = useState<TagItem[]>([]);
-
-  // UI/SEO
-  const [result, setResult] = useState<any>(null);
-  const [serp, setSerp] = useState<{ url?: string; title?: string; description?: string } | null>(null);
-  const [loading, setLoading] = useState<"idle" | "draft" | "publish">("idle");
-  const [showAfterActionModal, setShowAfterActionModal] = useState<null | "draft" | "publish">(null);
-  const [seoScore, setSeoScore] = useState(0);
-  const [seoChecks, setSeoChecks] = useState<Check[]>([]);
-  const [showSeoGate, setShowSeoGate] = useState<null | { mode: "publish" | "draft"; checks: Check[] }>(null);
-
-  // featured image (preview locale)
-  const [featuredFile, setFeaturedFile] = useState<File | null>(null);
-  const [featuredPreview, setFeaturedPreview] = useState<string | undefined>(undefined);
-
-  useEffect(() => {
-    if (!featuredFile) { setFeaturedPreview(undefined); return; }
-    const url = URL.createObjectURL(featuredFile);
-    setFeaturedPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [featuredFile]);
-
-  // categorie da WP
+  // carica categorie
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("/api/wp/taxonomy?type=categories&q=&per_page=100", { cache: "no-store" });
-        const json = await res.json();
-        if (Array.isArray(json)) setCategories(json);
-      } catch (err) { console.error("Errore categorie:", err); }
+        const c = await fetch("/api/wp/categories").then((r) => r.json());
+        setCats(Array.isArray(c) ? c : []);
+      } catch {}
     })();
   }, []);
 
-  function toggleCategory(id: number) {
-    setSelectedCategories(prev => (prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]));
-  }
-
-  function resetAll() {
-    formRef.current?.reset();
-    setTitle(""); setExcerpt(""); setContentHtml("<p></p>"); setSlug("");
-    setSeoFocus(""); setSelectedCategories([]); setTags([]);
-    setFeaturedFile(null); setFeaturedPreview(undefined);
-    setResult(null); setSerp(null);
-    setSeoScore(0); setSeoChecks([]);
-  }
-
-  function handleGenerateSlug() { if (title.trim()) setSlug(slugify(title)); }
-  function handleSuggestDescription() { setExcerpt(suggestMetaDescription(contentHtml)); }
-
-  function suggestH2(): string[] {
-    const kw = (seoFocus || title).trim();
-    if (!kw) return [];
-    const _ = firstParagraph(contentHtml) || title;
-    return [ `Cos'è ${kw}`, `${kw}: date, luoghi e dettagli`, `Come partecipare a ${kw}`, `${kw}: curiosità e consigli pratici` ];
-  }
-
-  function handlePreview() { setResult({ preview: true }); }
-
-  // Contatori + colori (UX)
-  const seoTitleLen = title.trim().length;
-  const seoDescLen  = excerpt.trim().length;
-  const titleLenClass = seoTitleLen === 0 ? "text-gray-400" : (seoTitleLen >= 35 && seoTitleLen <= 60 ? "text-green-700" : "text-amber-600");
-  const descLenClass  = seoDescLen  === 0 ? "text-gray-400" : (seoDescLen  >= 80 && seoDescLen  <= 160 ? "text-green-700" : "text-amber-600");
-
-  // SERP preview live
-  const liveSerp = useMemo(() => ({
-    url: "alburninet.it",
-    title: title || "Titolo SEO di esempio - Alburni",
-    description: excerpt || "Anteprima meta description…",
-  }), [title, excerpt]);
-
-  // Upload immagini dentro l'editor
-  async function uploadInlineImage(file: File): Promise<string> {
-    const up = new FormData();
-    up.append("file", file);
-    const mediaRes = await fetch("/api/wp/upload", { method: "POST", body: up });
-    if (!mediaRes.ok) throw new Error("Upload immagine fallito");
-    const mediaJson = await mediaRes.json();
-    if (!mediaJson?.source_url) throw new Error("Risposta upload non valida");
-    return String(mediaJson.source_url);
-  }
-
-  // crea tag mancanti e ritorna solo ID
-  async function resolveTagsToIds(items: TagItem[]): Promise<number[]> {
-    const ids: number[] = [];
-    for (const t of items) {
-      if (t.id) { ids.push(t.id); continue; }
+  // suggerimenti tag
+  useEffect(() => {
+    const q = tagQuery.trim();
+    if (!q) {
+      setTagSuggestions([]);
+      return;
+    }
+    const ctrl = new AbortController();
+    (async () => {
       try {
-        const r = await fetch("/api/wp/taxonomy", {
+        const res = await fetch(
+          `/api/wp/taxonomy?type=tags&q=${encodeURIComponent(q)}&per_page=10`,
+          { signal: ctrl.signal }
+        );
+        const items = await res.json();
+        if (Array.isArray(items)) setTagSuggestions(items);
+      } catch {}
+    })();
+    return () => ctrl.abort();
+  }, [tagQuery]);
+
+  const canPublish = useMemo(
+    () =>
+      form.title.trim().length > 0 &&
+      form.excerpt.trim().length > 0 &&
+      form.contentHtml.trim().length > 0,
+    [form]
+  );
+
+  function toggleCategory(id: number) {
+    setForm((s) =>
+      s.categories.includes(id)
+        ? { ...s, categories: s.categories.filter((x) => x !== id) }
+        : { ...s, categories: [...s.categories, id] }
+    );
+  }
+
+  async function handleUploadFeatured(file: File) {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch("/api/wp/upload", { method: "POST", body: fd });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err?.error || "Upload immagine fallito");
+      return;
+    }
+    const j = await res.json();
+    const url =
+      j?.source_url || j?.guid?.rendered || j?.url || j?.data?.source_url;
+    setForm((s) => ({
+      ...s,
+      featuredMediaId: j?.id,
+      featuredMediaUrl: url,
+    }));
+  }
+
+  /** Risolve i tag testo → ID WP (crea se non esistono) */
+  async function resolveTagIds(tagNames: string[]): Promise<number[]> {
+    const names = [...new Set(tagNames.map((t) => t.trim()).filter(Boolean))];
+    const ids: number[] = [];
+    for (const name of names) {
+      try {
+        // 1) cerca
+        const search = await fetch(
+          `/api/wp/taxonomy?type=tags&q=${encodeURIComponent(name)}&per_page=1`
+        ).then((r) => r.json());
+        const foundId = Array.isArray(search) && search[0]?.id ? search[0].id : null;
+        if (foundId) {
+          ids.push(Number(foundId));
+          continue;
+        }
+        // 2) crea
+        const created = await fetch(`/api/wp/taxonomy`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ type: "tags", name: t.name }),
-        });
-        const j = await r.json();
-        if (j?.id) ids.push(j.id);
-      } catch (e) { console.error("Errore creazione tag:", t.name, e); }
+          body: JSON.stringify({ type: "tags", name }),
+        }).then((r) => r.json());
+        if (created?.id) ids.push(Number(created.id));
+      } catch {
+        // ignora errori singoli
+      }
     }
     return ids;
   }
 
-  async function actuallyPublish(mode: "draft" | "publish") {
-    const fd = new FormData(formRef.current || undefined);
-    fd.set("title", title);
-    slug ? fd.set("slug", slug) : fd.delete("slug");
-    fd.set("excerpt", excerpt);                 // WP excerpt
-    fd.set("seo_title", title);                 // Yoast title
-    fd.set("seo_description", excerpt);         // Yoast meta
-    fd.set("seo_focuskw", seoFocus);
-    fd.set("content", contentHtml);             // HTML dal TipTap
-    fd.set("categories", selectedCategories.join(","));
-    fd.set("status", mode);
-
-    const tagIds = await resolveTagsToIds(tags);
-    if (tagIds.length) fd.set("tags", tagIds.join(","));
-
-    // immagine in evidenza
-    if (featuredFile) {
-      const up = new FormData(); up.append("file", featuredFile);
-      const mediaRes = await fetch("/api/wp/upload", { method: "POST", body: up });
-      const mediaJson = await mediaRes.json();
-      if (mediaJson?.id) fd.append("featured_media", String(mediaJson.id));
-    }
-
-    const res = await fetch("/api/wp/publish", { method: "POST", body: fd });
-    const json = await res.json();
-    setResult(json);
-
-    if (json?.ok && json?.post?.id) {
-      try {
-        const r = await fetch(`/api/wp/serp?id=${json.post.id}`, { cache: "no-store" });
-        if (r.ok) {
-          const p = await r.json();
-          const h = p?.yoast_head_json || {};
-          setSerp({ url: p?.link, title: h?.title, description: h?.description });
-        }
-      } catch {}
-    }
-
-    if (json?.ok) { resetAll(); setShowAfterActionModal(mode); setResult(json); }
-  }
-
-  async function handlePublish(mode: "draft" | "publish") {
+  /** submit robusto con errori leggibili + risoluzione tag → ids */
+  async function submitToWP(status: "draft" | "publish") {
+    setLoading(true);
     try {
-      setLoading(mode);
-      if (mode === "publish" && seoScore < SEO_MIN_SCORE_PUBLISH) {
-        setShowSeoGate({ mode, checks: seoChecks });
+      const tagIds = await resolveTagIds(form.tags);
+
+      const res = await fetch("/api/wp/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status,
+          title: form.title,
+          excerpt: form.excerpt,
+          content: form.contentHtml,
+          categories: form.categories,
+          tags: tagIds,                  // ← passiamo gli ID a WP
+          featured_media: form.featuredMediaId,
+          // NOTE: per salvare la focus keyphrase in Yoast via REST
+          // serve registrare il meta con show_in_rest. Per ora
+          // usiamo focusKw solo per l'assistente SEO interno.
+          // meta: { _yoast_wpseo_focuskw: form.focusKw } // (attivabile lato server)
+        }),
+      });
+
+      const raw = await res.text();
+      let data: any = null;
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch {
+        data = null;
+      }
+
+      if (!res.ok) {
+        const msg =
+          (data && (data.error || data.message)) ||
+          raw ||
+          `HTTP ${res.status} ${res.statusText}`;
+        console.error("[POST /api/wp/posts] ERRORE:", {
+          status: res.status,
+          msg,
+          data,
+        });
+        alert(`Salvataggio fallito: ${msg}`);
         return;
       }
-      await actuallyPublish(mode);
+
+      // OK
+      setForm(emptyForm);
+      const go = window.confirm(
+        status === "publish"
+          ? "Articolo pubblicato! Vuoi vedere gli articoli?"
+          : "Bozza salvata! Vuoi vedere le bozze?"
+      );
+      if (go) window.location.href = "/posts";
+    } catch (err: any) {
+      console.error("[POST /api/wp/posts] NETWORK ERROR:", err);
+      alert(`Errore di rete: ${err?.message || err}`);
     } finally {
-      setLoading("idle");
+      setLoading(false);
     }
+  }
+
+  function onClear() {
+    if (confirm("Sicuro di ripulire il form?")) setForm(emptyForm);
+  }
+
+  // === UI helpers per Tag ===
+  function addTag(name: string) {
+    const t = name.trim();
+    if (!t) return;
+    setForm((s) =>
+      s.tags.includes(t) ? s : { ...s, tags: [...s.tags, t] }
+    );
+    setTagQuery("");
+    setShowTagSug(false);
+  }
+  function removeTag(name: string) {
+    setForm((s) => ({ ...s, tags: s.tags.filter((t) => t !== name) }));
   }
 
   return (
-    <div>
-      <NavBar />
-      <div className="grid lg:grid-cols-[1fr_420px] gap-6 p-6 max-w-7xl mx-auto">
-        {/* COLONNA SINISTRA: form + editor + tag */}
-        <form
-          ref={formRef}
-          onSubmit={(e)=>{ e.preventDefault(); handlePreview(); }}
-          className="grid gap-4 bg-white p-6 rounded-2xl shadow-sm"
-        >
-          <h1 className="text-2xl font-semibold">Nuovo Articolo</h1>
-
-          {/* Titolo */}
-          <div className="grid gap-1">
-            <label className="font-medium">Titolo</label>
+    <div className="space-y-6">
+      {/* GRID principale: contenuto + sidebar (ordine richiesto) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* COLONNA SINISTRA */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* CARD: Titolo */}
+          <div className="bg-white rounded-xl shadow p-4">
+            <label className="block text-sm font-medium mb-1">Titolo (H1)</label>
             <input
-              name="title"
-              value={title}
-              onChange={(e)=>setTitle(e.target.value)}
-              placeholder="Titolo (consigliati 35–60 caratteri)"
-              required
-              className="border p-2 rounded"
+              type="text"
+              value={form.title}
+              onChange={(e) => setForm((s) => ({ ...s, title: e.target.value }))}
+              placeholder="Titolo dell'articolo"
+              className="w-full border rounded-lg px-3 py-2"
             />
-            <span className={`text-xs ${titleLenClass}`}>Lunghezza Titolo/SEO Title: {seoTitleLen}/60</span>
           </div>
 
-          {/* Slug */}
-          <div className="flex gap-2">
-            <input
-              name="slug"
-              value={slug}
-              onChange={(e)=>setSlug(e.target.value)}
-              placeholder="Slug (opzionale)"
-              className="border p-2 rounded flex-1"
+          {/* CARD: Estratto / Meta description */}
+          <div className="bg-white rounded-xl shadow p-4">
+            <label className="block text-sm font-medium mb-1">
+              Estratto / Meta description
+            </label>
+            <textarea
+              value={form.excerpt}
+              onChange={(e) =>
+                setForm((s) => ({ ...s, excerpt: e.target.value }))
+              }
+              rows={3}
+              placeholder="Breve riassunto (80–160 caratteri consigliati)…"
+              className="w-full border rounded-lg px-3 py-2"
             />
-            <button type="button" onClick={handleGenerateSlug} className="px-3 py-2 border rounded">
-              Genera slug
-            </button>
           </div>
 
-          {/* Estratto / Meta Description */}
-          <div className="grid gap-1">
-            <label className="font-medium">Estratto / Meta Description</label>
-            <div className="flex gap-2">
-              <textarea
-                name="excerpt"
-                value={excerpt}
-                onChange={(e)=>setExcerpt(e.target.value)}
-                placeholder="(80–160 caratteri)"
-                className="border p-2 rounded flex-1 h-24"
-              />
-              <button type="button" onClick={handleSuggestDescription} className="px-3 py-2 border rounded whitespace-nowrap">
-                Suggerisci
-              </button>
-            </div>
-            <span className={`text-xs ${descLenClass}`}>Lunghezza Meta Description: {seoDescLen}/160</span>
+          {/* CARD: Contenuto (TinyEditor) */}
+          <div className="bg-white rounded-xl shadow p-4">
+            <label className="block text-sm font-medium mb-2">Contenuto</label>
+            <TinyEditor
+              value={form.contentHtml}
+              onChange={(html) => setForm((s) => ({ ...s, contentHtml: html }))}
+              height={900}
+              placeholder="Scrivi qui il contenuto (puoi incollare anche da Word/Docs)…"
+            />
           </div>
 
-          {/* Contenuto (TipTap) */}
-          <div className="grid gap-2">
-            <label className="font-medium">Contenuto</label>
-            <RichTextEditor value={contentHtml} onChange={setContentHtml} height={520} onUploadImage={uploadInlineImage} />
-          </div>
-
-          {/* Snippet H2 veloci */}
-          <div className="flex flex-wrap gap-2 text-sm">
-            {suggestH2().map((h, i) => (
-              <button key={i} type="button" onClick={() => setContentHtml(prev => `${prev}<h2>${h}</h2>`)} className="px-3 py-1 border rounded">
-                + {h}
-              </button>
-            ))}
-          </div>
-
-          {/* Categorie */}
-          <div>
-            <p className="font-medium mb-2">Categorie</p>
-            <div className="flex flex-wrap gap-2">
-              {categories.length === 0 && <p className="text-gray-500 text-sm">Caricamento categorie…</p>}
-              {categories.map(cat => (
-                <button
-                  type="button"
-                  key={cat.id}
-                  onClick={() => toggleCategory(cat.id)}
-                  className={`px-3 py-1 rounded-full border text-sm ${selectedCategories.includes(cat.id) ? "bg-black text-white" : "bg-gray-100 hover:bg-gray-200"}`}
-                >
-                  {cat.name}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* TAG – pannello centrale */}
-          <TagsPanel value={tags} onChange={setTags} />
-
-          {/* Immagine in evidenza (una riga) + Pulsanti sotto */}
-          <div className="grid gap-4">
-            {/* — Immagine in evidenza: un solo rigo */}
-            <div className="grid gap-1">
-              <div className="flex items-center gap-3">
-                <label className="font-medium shrink-0">Immagine in evidenza</label>
+          {/* >>> NUOVO BOX: Tag & Keyphrase (sotto il contenuto) <<< */}
+          <div className="bg-white rounded-xl shadow p-4">
+            <div className="mb-4">
+              <div className="text-sm font-medium mb-2">Tag</div>
+              {/* Input + chip + suggerimenti */}
+              <div className="relative">
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {form.tags.map((t) => (
+                    <span
+                      key={t}
+                      className="inline-flex items-center gap-2 px-2 py-1 rounded-full text-sm border bg-gray-50"
+                    >
+                      {t}
+                      <button
+                        type="button"
+                        className="text-gray-500 hover:text-gray-700"
+                        onClick={() => removeTag(t)}
+                        aria-label={`Rimuovi tag ${t}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
                 <input
-                  type="file"
-                  name="featured"
-                  accept="image/*"
-                  className="border p-2 rounded"
-                  onChange={(e) => setFeaturedFile(e.target.files?.[0] || null)}
+                  type="text"
+                  value={tagQuery}
+                  onChange={(e) => {
+                    setTagQuery(e.target.value);
+                    setShowTagSug(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addTag(tagQuery);
+                    }
+                  }}
+                  placeholder="Aggiungi tag e premi Invio…"
+                  className="w-full border rounded-lg px-3 py-2"
                 />
-                {featuredPreview && (
-                  <img
-                    src={featuredPreview}
-                    alt=""
-                    className="h-12 w-20 object-cover rounded border"
-                  />
+                {showTagSug && tagSuggestions.length > 0 && (
+                  <div className="absolute z-10 mt-1 w-full bg-white border rounded-lg shadow">
+                    {tagSuggestions.map((s) => (
+                      <button
+                        type="button"
+                        key={s.id}
+                        className="block w-full text-left px-3 py-2 hover:bg-gray-50"
+                        onClick={() => addTag(s.name)}
+                      >
+                        {s.name}
+                      </button>
+                    ))}
+                  </div>
                 )}
-                <span className="text-xs text-gray-500 ml-auto hidden md:inline">
-                  Usa immagini ottimizzate (≤ 200 KB)
-                </span>
               </div>
-              {/* hint responsive (solo mobile) */}
-              <p className="text-xs text-gray-500 md:hidden">
-                Usa immagini ottimizzate (≤ 200 KB)
+              <p className="text-xs text-gray-500 mt-2">
+                Suggerimento: 4–8 tag pertinenti aiutano l’organizzazione e la SEO.
               </p>
             </div>
 
-            {/* — Pulsanti azione sotto */}
-            <div className="flex flex-wrap gap-3 items-center">
-              <button type="submit" className="px-4 py-2 border rounded">
-                Anteprima
-              </button>
-
-              <button
-                type="button"
-                disabled={loading !== "idle"}
-                onClick={() => handlePublish("draft")}
-                className="px-4 py-2 border rounded disabled:opacity-60"
-                title="Salva come bozza in WordPress"
-              >
-                {loading === "draft" ? "Salvataggio…" : "Salva bozza"}
-              </button>
-
-              <button
-                type="button"
-                disabled={loading !== "idle"}
-                onClick={() => handlePublish("publish")}
-                className={`px-4 py-2 text-white rounded disabled:opacity-60 ${
-                  seoScore >= SEO_MIN_SCORE_PUBLISH
-                    ? "bg-black"
-                    : "bg-amber-600 hover:bg-amber-700"
-                }`}
-                title={
-                  seoScore >= SEO_MIN_SCORE_PUBLISH
-                    ? "Pubblica subito in WordPress"
-                    : `Score ${seoScore}%: consigliato migliorare prima di pubblicare`
+            <div className="border-t pt-4">
+              <label className="block text-sm font-medium mb-1">
+                Focus keyphrase (Yoast)
+              </label>
+              <input
+                type="text"
+                value={form.focusKw}
+                onChange={(e) =>
+                  setForm((s) => ({ ...s, focusKw: e.target.value }))
                 }
-              >
-                {loading === "publish" ? "Pubblicazione…" : `Pubblica (SEO ${seoScore}%)`}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => resetAll()}
-                className="px-4 py-2 border rounded"
-              >
-                Pulisci
-              </button>
+                placeholder="Parola/frase chiave principale (es. 'escursione alburni estate')"
+                className="w-full border rounded-lg px-3 py-2"
+              />
+              <p className="text-xs text-gray-500 mt-2">
+                Usa la keyphrase nel titolo, nei primi paragrafi e nell’estratto per un punteggio Yoast migliore.
+              </p>
             </div>
           </div>
-        </form>
-
-        {/* COLONNA DESTRA: Preview + SEO helper */}
-        <div className="grid gap-6">
-          <ArticlePreview title={title} excerpt={excerpt} html={contentHtml} featuredUrl={featuredPreview} />
-          <div className="bg-white border rounded-2xl p-4 grid gap-2">
-            <p className="text-sm text-gray-600">Anteprima SERP (live)</p>
-            <SerpPreview url={liveSerp.url} title={liveSerp.title} description={liveSerp.description} />
-          </div>
-          <SeoAssistant
-            title={title}
-            slug={slug}
-            contentMd={contentHtml}
-            seoTitle={title}
-            seoDescription={excerpt}
-            focusKw={seoFocus}
-            onScoreChange={(score, checks) => { setSeoScore(score); setSeoChecks(checks); }}
-          />
+          {/* <<< FINE NUOVO BOX >>> */}
         </div>
 
-        {/* Esito + SERP post-pubblicazione */}
-        {result && (
-          <div className="lg:col-span-2 border rounded p-4 bg-white grid gap-3">
-            <h3 className="font-semibold">Esito</h3>
-            {result.ok ? (
-              <p>Operazione completata! ID: {result.post?.id} — <a className="underline" href={result.post?.link} target="_blank">apri</a></p>
-            ) : result.preview ? (
-              <p className="text-gray-600">Anteprima aggiornata.</p>
-            ) : (
-              <pre className="text-red-600 whitespace-pre-wrap">{String(result.error)}</pre>
-            )}
-            {serp && (
-              <div className="grid gap-2">
-                <h4 className="font-semibold">Anteprima SERP (post-pubblicazione)</h4>
-                <SerpPreview url={serp.url} title={serp.title} description={serp.description} />
-              </div>
-            )}
+        {/* SIDEBAR DESTRA */}
+        <div className="space-y-6">
+          {/* 1) CARD: Pulsanti */}
+          <div className="bg-white rounded-xl shadow p-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
+              onClick={() => window.open("/preview", "_blank")}
+            >
+              Anteprima
+            </button>
+            <button
+              type="button"
+              disabled={loading}
+              className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 disabled:opacity-60"
+              onClick={() => submitToWP("draft")}
+            >
+              Salva bozza
+            </button>
+            <button
+              type="button"
+              disabled={!canPublish || loading}
+              className="px-3 py-2 rounded-lg bg-black text-white hover:bg-gray-800 disabled:opacity-60"
+              onClick={() => submitToWP("publish")}
+            >
+              Pubblica
+            </button>
+            <button
+              type="button"
+              className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
+              onClick={onClear}
+            >
+              Pulisci
+            </button>
           </div>
-        )}
+
+          {/* 2) CARD: Immagine in evidenza */}
+          <div className="bg-white rounded-xl shadow p-4">
+            <div className="text-sm font-medium mb-2">Immagine in evidenza</div>
+
+            {/* Listener messaggi dal popup WP (se lo usi) */}
+            <MediaPickerBridge
+              onPicked={(att) =>
+                setForm((s) => ({
+                  ...s,
+                  featuredMediaId: att.id,
+                  featuredMediaUrl: att.url,
+                }))
+              }
+            />
+
+            <div className="flex flex-col gap-3">
+              {form.featuredMediaUrl ? (
+                <div className="relative">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={form.featuredMediaUrl}
+                    alt="Immagine in evidenza"
+                    className="w-full rounded-lg border object-cover max-h-60"
+                  />
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setForm((s) => ({
+                          ...s,
+                          featuredMediaId: undefined,
+                          featuredMediaUrl: undefined,
+                        }))
+                      }
+                      className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 text-sm"
+                    >
+                      Rimuovi immagine
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openWpMediaPicker()}
+                      className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 text-sm"
+                    >
+                      Cambia dalla Libreria Media
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="w-full h-32 border rounded-lg flex items-center justify-center text-sm text-gray-500 bg-gray-50">
+                    Nessuna immagine
+                  </div>
+                  <div className="flex gap-2">
+                    <label className="inline-flex items-center px-3 py-2 border rounded-lg cursor-pointer bg-white hover:bg-gray-50 text-sm">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) handleUploadFeatured(f);
+                        }}
+                      />
+                      Carica immagine
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => openWpMediaPicker()}
+                      className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 text-sm"
+                    >
+                      Seleziona dalla Libreria Media
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* 3) CARD: Categorie */}
+          <div className="bg-white rounded-xl shadow p-4">
+            <div className="text-sm font-medium mb-2">Categorie</div>
+            <div className="flex flex-wrap gap-2">
+              {cats.map((c) => {
+                const active = form.categories.includes(c.id);
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => toggleCategory(c.id)}
+                    className={`px-2 py-1 rounded-full border text-sm ${
+                      active
+                        ? "bg-blue-600 border-blue-600 text-white"
+                        : "bg-white hover:bg-gray-50"
+                    }`}
+                    title={c.slug}
+                  >
+                    {c.name}
+                  </button>
+                );
+              })}
+              {cats.length === 0 && (
+                <div className="text-sm text-gray-500">
+                  Nessuna categoria disponibile.
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 4) CARD: SEO Assistant + SERP */}
+          <div className="bg-white rounded-xl shadow p-4">
+            <div className="text-sm font-medium mb-3">Assistente SEO</div>
+            <SeoAssistant
+              title={form.title}
+              slug={slugify(form.title || "")}
+              contentHtml={form.contentHtml}
+              seoTitle={form.title}
+              seoDescription={form.excerpt}
+              focusKw={form.focusKw}   
+            />
+            <div className="mt-4">
+              <SerpPreview
+                title={form.title || "Titolo dell'articolo"}
+                description={form.excerpt || "Anteprima della meta description…"}
+                url="https://alburninet.it/articolo-di-prova"
+              />
+            </div>
+          </div>
+        </div>
       </div>
-
-      {/* Modal post-azione */}
-      {showAfterActionModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/30" onClick={() => setShowAfterActionModal(null)} />
-          <div className="relative z-10 bg-white rounded-2xl shadow-lg p-6 w-[90%] max-w-md">
-            <h4 className="text-lg font-semibold mb-2">{showAfterActionModal === "publish" ? "Articolo pubblicato" : "Bozza salvata"}</h4>
-            <p className="text-sm text-gray-600 mb-4">Cosa vuoi fare adesso?</p>
-            <div className="flex gap-2 justify-end">
-              <button className="px-4 py-2 border rounded" onClick={() => setShowAfterActionModal(null)}>Nuovo articolo</button>
-              <button className="px-4 py-2 bg-black text-white rounded" onClick={() => router.push("/posts")}>Vedi articoli</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* SEO Gate Modal */}
-      {showSeoGate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/30" onClick={() => setShowSeoGate(null)} />
-          <div className="relative z-10 bg-white rounded-2xl shadow-lg p-6 w-[90%] max-w-lg">
-            <h4 className="text-lg font-semibold mb-2">Migliora la SEO prima di pubblicare</h4>
-            <p className="text-sm text-gray-600 mb-3">Score attuale: <strong>{seoScore}%</strong> (soglia consigliata: {SEO_MIN_SCORE_PUBLISH}%)</p>
-            <ul className="list-disc pl-5 text-sm max-h-48 overflow-auto">
-              {seoChecks.filter(c=>!c.ok).map((c,i)=>(<li key={i} className="text-gray-800">{c.label}</li>))}
-            </ul>
-            <div className="flex gap-2 justify-end mt-4">
-              <button className="px-4 py-2 border rounded" onClick={()=>setShowSeoGate(null)}>Torna a modificare</button>
-              <button className="px-4 py-2 bg-amber-600 text-white rounded" onClick={async()=>{ setShowSeoGate(null); await actuallyPublish("publish"); }}>Pubblica comunque</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

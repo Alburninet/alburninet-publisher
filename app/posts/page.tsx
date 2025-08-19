@@ -1,114 +1,209 @@
 "use client";
-import { useEffect, useState } from "react";
-import NavBar from "@/components/NavBar";
 
-type WPItem = {
+import React, { useEffect, useMemo, useState } from "react";
+
+type WpPost = {
   id: number;
   date: string;
   modified: string;
-  status: string;
+  status: "publish" | "draft";
   link: string;
   title?: { rendered?: string };
+  excerpt?: { rendered?: string };
 };
 
+type ApiList = WpPost[];
+
+/* UI helpers */
+function fmtDate(iso: string) {
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return iso;
+  }
+}
+
 export default function PostsPage() {
-  const [items, setItems] = useState<WPItem[]>([]);
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
+  const [status, setStatus] = useState<"all" | "publish" | "draft">("all");
   const [q, setQ] = useState("");
-  const [status, setStatus] = useState<"any" | "publish" | "draft">("any");
+  const [page, setPage] = useState(1);
+  const [perPage] = useState(20);
+
+  const [items, setItems] = useState<WpPost[]>([]);
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const perPage = 20;
+  const [hasNext, setHasNext] = useState(false);
+
+  const empty = useMemo(() => items.length === 0, [items]);
+
+  async function fetchOne(st: "publish" | "draft", pg: number) {
+    const res = await fetch(
+      `/api/wp/posts?status=${st}&page=${pg}&per_page=${perPage}`,
+      { cache: "no-store" }
+    );
+    if (!res.ok) throw new Error(await res.text());
+    return (await res.json()) as ApiList;
+  }
 
   async function load() {
+    setLoading(true);
     try {
-      setLoading(true);
-      setErr(null);
-      const params = new URLSearchParams({
-        page: String(page),
-        per_page: String(perPage),
-        ...(q ? { search: q } : {}),
-        ...(status ? { status } : {}),
-      });
-      const res = await fetch(`/api/wp/posts?${params.toString()}`, { cache: "no-store" });
-      const json = await res.json();
-      if (!res.ok) {
-        setErr(json?.error || `Errore ${res.status}`);
-        setItems([]); setTotalPages(1);
-        return;
+      let data: WpPost[] = [];
+      if (status === "all") {
+        const [pub, dr] = await Promise.all([fetchOne("publish", page), fetchOne("draft", page)]);
+        data = [...pub, ...dr].sort(
+          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+        );
+        // stima grezza next: se almeno uno dei due ha lunghezza piena
+        setHasNext(pub.length === perPage || dr.length === perPage);
+      } else {
+        const list = await fetchOne(status, page);
+        data = list;
+        setHasNext(list.length === perPage);
       }
-      setItems(json.items || []);
-      setTotalPages(json.totalPages || 1);
-    } catch (e: any) {
-      setErr(e.message || String(e));
-      setItems([]); setTotalPages(1);
+
+      // filtro client-side di cortesia (se /api non supporta ?search)
+      const filtered = q.trim()
+        ? data.filter((p) => {
+            const t = p.title?.rendered?.toLowerCase() || "";
+            const e = p.excerpt?.rendered?.toLowerCase() || "";
+            const needle = q.trim().toLowerCase();
+            return t.includes(needle) || e.includes(needle);
+          })
+        : data;
+
+      setItems(filtered);
+    } catch (e) {
+      console.error("Errore caricamento articoli:", e);
+      setItems([]);
+      setHasNext(false);
     } finally {
       setLoading(false);
     }
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, status]);
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, page]);
+
+  function applyFilters() {
+    setPage(1);
+    load();
+  }
 
   return (
-    <div>
-      <NavBar />
-      <div className="max-w-6xl mx-auto p-6 grid gap-4 bg-white rounded-2xl">
-        <h1 className="text-2xl font-semibold">Articoli</h1>
+    <div className="space-y-8">
+      {/* Titolo pagina */}
+      <h1 className="text-3xl font-semibold">Articoli</h1>
 
-        <div className="flex flex-wrap gap-2 items-center">
-          <input value={q} onChange={(e)=>setQ(e.target.value)} placeholder="Cerca titolo…" className="border p-2 rounded flex-1 min-w-[240px]" />
-          <select value={status} onChange={(e)=>setStatus(e.target.value as any)} className="border p-2 rounded">
-            <option value="any">Tutti</option>
-            <option value="publish">Pubblicati</option>
-            <option value="draft">Bozze</option>
-          </select>
-          <button onClick={()=>{ setPage(1); load(); }} className="px-3 py-2 border rounded">Cerca</button>
+      {/* Barra filtri (nessuna Navbar qui) */}
+      <div className="flex flex-wrap items-center gap-3">
+        <select
+          value={status}
+          onChange={(e) => {
+            setStatus(e.target.value as any);
+            setPage(1);
+          }}
+          className="border rounded-lg px-3 py-2"
+        >
+          <option value="all">Tutti gli stati</option>
+          <option value="publish">Pubblicati</option>
+          <option value="draft">Bozze</option>
+        </select>
+
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Cerca per titolo/contenuto..."
+          className="flex-1 min-w-[260px] border rounded-lg px-3 py-2"
+        />
+
+        <button
+          onClick={applyFilters}
+          className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
+        >
+          Applica
+        </button>
+      </div>
+
+      {/* Lista / tabella */}
+      <div className="bg-white rounded-xl shadow">
+        <div className="p-4">
+          {loading ? (
+            <div className="text-sm text-gray-500">Caricamento…</div>
+          ) : empty ? (
+            <div className="text-sm text-gray-500">Nessun articolo trovato.</div>
+          ) : (
+            <ul className="divide-y">
+              {items.map((p) => (
+                <li key={p.id} className="py-3">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${
+                            p.status === "publish"
+                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                              : "bg-amber-50 text-amber-700 border-amber-200"
+                          }`}
+                        >
+                          {p.status === "publish" ? "Pubblicato" : "Bozza"}
+                        </span>
+                        <a
+                          href={p.link}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-medium hover:underline truncate"
+                          title="Apri sul sito"
+                        >
+                          {p.title?.rendered || "(senza titolo)"}
+                        </a>
+                      </div>
+                      <div
+                        className="prose prose-sm text-gray-600 mt-1 line-clamp-2"
+                        dangerouslySetInnerHTML={{
+                          __html: p.excerpt?.rendered || "",
+                        }}
+                      />
+                      <div className="text-xs text-gray-500 mt-1">
+                        creato: {fmtDate(p.date)} · modificato: {fmtDate(p.modified)}
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 flex items-center gap-2">
+                      <a
+                        href={p.link}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 text-sm"
+                      >
+                        Apri
+                      </a>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
+      </div>
 
-        {loading && <p className="text-gray-500">Caricamento…</p>}
-        {err && <pre className="text-red-600 whitespace-pre-wrap">{err}</pre>}
-
-        {!loading && !err && (
-          <>
-            <div className="overflow-auto">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="text-left border-b">
-                    <th className="py-2 pr-3">ID</th>
-                    <th className="py-2 pr-3">Titolo</th>
-                    <th className="py-2 pr-3">Stato</th>
-                    <th className="py-2 pr-3">Data</th>
-                    <th className="py-2 pr-3">Azioni</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map(p => (
-                    <tr key={p.id} className="border-b">
-                      <td className="py-2 pr-3">{p.id}</td>
-                      <td className="py-2 pr-3" dangerouslySetInnerHTML={{__html: p.title?.rendered || "(senza titolo)"}} />
-                      <td className="py-2 pr-3 uppercase">{p.status}</td>
-                      <td className="py-2 pr-3">{new Date(p.date).toLocaleString()}</td>
-                      <td className="py-2 pr-3">
-                        <a className="underline mr-3" href={p.link} target="_blank">Apri</a>
-                        <a className="underline" href={`${process.env.NEXT_PUBLIC_WORDPRESS_BASE_URL || ""}/wp-admin/post.php?post=${p.id}&action=edit`} target="_blank">Modifica in WP</a>
-                      </td>
-                    </tr>
-                  ))}
-                  {items.length === 0 && (
-                    <tr><td className="py-6 text-gray-500" colSpan={5}>Nessun articolo trovato.</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="flex gap-2 justify-end">
-              <button disabled={page<=1} onClick={()=>setPage(p=>p-1)} className="px-3 py-2 border rounded disabled:opacity-50">Indietro</button>
-              <span className="px-2 py-2 text-sm">Pagina {page} / {totalPages}</span>
-              <button disabled={page>=totalPages} onClick={()=>setPage(p=>p+1)} className="px-3 py-2 border rounded disabled:opacity-50">Avanti</button>
-            </div>
-          </>
-        )}
+      {/* Paginazione semplice */}
+      <div className="flex items-center gap-3">
+        <button
+          disabled={page <= 1 || loading}
+          onClick={() => setPage((p) => Math.max(1, p - 1))}
+          className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 disabled:opacity-50"
+        >
+          ← Precedente
+        </button>
+        <button
+          disabled={!hasNext || loading}
+          onClick={() => setPage((p) => p + 1)}
+          className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 disabled:opacity-50"
+        >
+          Successiva →
+        </button>
       </div>
     </div>
   );
