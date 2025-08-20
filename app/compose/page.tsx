@@ -12,10 +12,18 @@ type FormState = {
   excerpt: string; // meta-description
   contentHtml: string;
   categories: number[];
-  tags: string[];            // ← tag come testo (chip)
-  focusKw: string;           // ← keyphrase principale per Yoast/SEO
+  tags: string[];            // tag come testo (chip)
+  focusKw: string;           // keyphrase principale per Yoast
+  // Immagine in evidenza
   featuredMediaId?: number;
   featuredMediaUrl?: string;
+  // SEO avanzato
+  seoTitle?: string;
+  canonical?: string;
+  primaryCategoryId?: number;
+  noindex?: boolean;
+  nofollow?: boolean;
+  isCornerstone?: boolean;
 };
 
 const emptyForm: FormState = {
@@ -27,6 +35,12 @@ const emptyForm: FormState = {
   focusKw: "",
   featuredMediaId: undefined,
   featuredMediaUrl: undefined,
+  seoTitle: "",
+  canonical: "",
+  primaryCategoryId: undefined,
+  noindex: false,
+  nofollow: false,
+  isCornerstone: false,
 };
 
 // URL WordPress da env (per eventuale Media Library popup)
@@ -191,6 +205,30 @@ export default function ComposePage() {
     return ids;
   }
 
+  /** NUOVO: salva stato e apri /preview */
+function handlePreview() {
+  try {
+    const payload = {
+      title: form.title,
+      excerpt: form.excerpt,
+      contentHtml: form.contentHtml,
+      featuredMediaUrl: form.featuredMediaUrl,
+      categories: form.categories
+        .map((id) => cats.find((c) => c.id === id))
+        .filter(Boolean)
+        .map((c) => ({ id: (c as any).id, name: (c as any).name })),
+      seoTitle: form.seoTitle,
+      canonical: form.canonical,
+      focusKw: form.focusKw,
+      tags: form.tags, // ← NEW: passa i tag per la preview
+    };
+    localStorage.setItem("alburninet_preview", JSON.stringify(payload));
+    window.open("/preview", "_blank");
+  } catch (e) {
+    alert("Impossibile aprire l’anteprima.");
+  }
+}
+
   /** submit robusto con errori leggibili + risoluzione tag → ids */
   async function submitToWP(status: "draft" | "publish") {
     setLoading(true);
@@ -206,12 +244,18 @@ export default function ComposePage() {
           excerpt: form.excerpt,
           content: form.contentHtml,
           categories: form.categories,
-          tags: tagIds,                  // ← passiamo gli ID a WP
+          tags: tagIds,
           featured_media: form.featuredMediaId,
-          // NOTE: per salvare la focus keyphrase in Yoast via REST
-          // serve registrare il meta con show_in_rest. Per ora
-          // usiamo focusKw solo per l'assistente SEO interno.
-          // meta: { _yoast_wpseo_focuskw: form.focusKw } // (attivabile lato server)
+
+          // —— SEO / Yoast —— //
+          seoTitle: form.seoTitle || form.title,
+          metaDesc: form.excerpt,
+          focusKw: form.focusKw,
+          canonical: form.canonical,
+          primaryCategoryId: form.primaryCategoryId,
+          noindex: !!form.noindex,
+          nofollow: !!form.nofollow,
+          isCornerstone: !!form.isCornerstone,
         }),
       });
 
@@ -316,7 +360,7 @@ export default function ComposePage() {
             />
           </div>
 
-          {/* >>> NUOVO BOX: Tag & Keyphrase (sotto il contenuto) <<< */}
+          {/* >>> BOX: Tag & Keyphrase (sotto il contenuto) <<< */}
           <div className="bg-white rounded-xl shadow p-4">
             <div className="mb-4">
               <div className="text-sm font-medium mb-2">Tag</div>
@@ -394,7 +438,7 @@ export default function ComposePage() {
               </p>
             </div>
           </div>
-          {/* <<< FINE NUOVO BOX >>> */}
+          {/* <<< FINE BOX TAG & KEYPHRASE >>> */}
         </div>
 
         {/* SIDEBAR DESTRA */}
@@ -404,7 +448,7 @@ export default function ComposePage() {
             <button
               type="button"
               className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
-              onClick={() => window.open("/preview", "_blank")}
+              onClick={handlePreview}
             >
               Anteprima
             </button>
@@ -550,16 +594,90 @@ export default function ComposePage() {
               contentHtml={form.contentHtml}
               seoTitle={form.title}
               seoDescription={form.excerpt}
-              focusKw={form.focusKw}   
+              focusKw={form.focusKw}
             />
             <div className="mt-4">
               <SerpPreview
-                title={form.title || "Titolo dell'articolo"}
+                title={form.seoTitle || form.title || "Titolo dell'articolo"}
                 description={form.excerpt || "Anteprima della meta description…"}
                 url="https://alburninet.it/articolo-di-prova"
               />
             </div>
           </div>
+
+          {/* 5) CARD: SEO avanzato (Yoast) */}
+          <div className="bg-white rounded-xl shadow p-4">
+            <div className="text-sm font-medium mb-3">SEO avanzato</div>
+
+            <label className="block text-sm mb-1">Titolo SEO (opzionale)</label>
+            <input
+              type="text"
+              value={form.seoTitle || ""}
+              onChange={(e) => setForm((s) => ({ ...s, seoTitle: e.target.value }))}
+              placeholder="Se vuoto usa il Titolo"
+              className="w-full border rounded-lg px-3 py-2 mb-3"
+            />
+
+            <label className="block text-sm mb-1">Canonical URL</label>
+            <input
+              type="url"
+              value={form.canonical || ""}
+              onChange={(e) => setForm((s) => ({ ...s, canonical: e.target.value }))}
+              placeholder="https://esempio.it/articolo"
+              className="w-full border rounded-lg px-3 py-2 mb-3"
+            />
+
+            <label className="block text-sm mb-1">Categoria primaria</label>
+            <select
+              value={form.primaryCategoryId ?? ""}
+              onChange={(e) =>
+                setForm((s) => ({
+                  ...s,
+                  primaryCategoryId: e.target.value ? Number(e.target.value) : undefined,
+                }))
+              }
+              className="w-full border rounded-lg px-3 py-2 mb-3"
+            >
+              <option value="">(nessuna: lascia a Yoast)</option>
+              {form.categories.map((cid) => {
+                const c = cats.find((x) => x.id === cid);
+                if (!c) return null;
+                return (
+                  <option key={cid} value={cid}>
+                    {c.name}
+                  </option>
+                );
+              })}
+            </select>
+
+            <div className="flex items-center gap-4">
+              <label className="inline-flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={!!form.noindex}
+                  onChange={(e) => setForm((s) => ({ ...s, noindex: e.target.checked }))}
+                />
+                Noindex
+              </label>
+              <label className="inline-flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={!!form.nofollow}
+                  onChange={(e) => setForm((s) => ({ ...s, nofollow: e.target.checked }))}
+                />
+                Nofollow
+              </label>
+              <label className="inline-flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={!!form.isCornerstone}
+                  onChange={(e) => setForm((s) => ({ ...s, isCornerstone: e.target.checked }))}
+                />
+                Cornerstone
+              </label>
+            </div>
+          </div>
+          {/* <<< FINE SEO avanzato >>> */}
         </div>
       </div>
     </div>

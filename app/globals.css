@@ -89,3 +89,21 @@ a:hover {
 .editor-styles-wrapper :focus {
   outline-color: #007cba;
 }
+
+/* === Supporto classi di allineamento WordPress + retro-compat === */
+.alignleft { float: left; margin: 0 1rem 1rem 0; max-width: 50%; }
+.alignright { float: right; margin: 0 0 1rem 1rem; max-width: 50%; }
+.aligncenter { display: block; margin: 1rem auto; float: none; }
+
+/* Retro-compat con classi precedenti dell'editor */
+.float-left { float: left; margin: 0 1rem 1rem 0; max-width: 50%; }
+.float-right { float: right; margin: 0 0 1rem 1rem; max-width: 50%; }
+.img-center { display: block; margin: 1rem auto; float: none; }
+
+/* Caption WP */
+.wp-caption { max-width: 100%; }
+.wp-caption img { width: 100%; height: auto; }
+.wp-caption-text { font-size: 0.875rem; color: #6b7280; text-align: center; margin-top: .25rem; }
+
+/* Clearfix utility */
+.clearfix::after { content: ""; display: table; clear: both; }
