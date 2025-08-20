@@ -19,3 +19,10 @@ Thumbs.db
 
 # Vari
 coverage/
+.env*.local
+node_modules
+.next
+dist
+build
+out
+.vercel
