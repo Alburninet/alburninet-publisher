@@ -1,73 +1,48 @@
 "use client";
-import dynamic from "next/dynamic";
-import { useMemo } from "react";
-import type { ICommand, TextState, TextAreaTextApi } from "@uiw/react-md-editor";
 
-const MDEditor = dynamic(() => import("@uiw/react-md-editor"), { ssr: false });
+import React from "react";
+import { Editor } from "@tinymce/tinymce-react";
 
-function customCommand(
-  name: string,
-  icon: string,
-  execute: (state: TextState, api: TextAreaTextApi) => void,
-): ICommand {
-  return {
-    name,
-    keyCommand: name,
-    icon: <span style={{ padding: "0 6px" }}>{icon}</span>,
-    execute,
-  };
-}
-
-const H2 = customCommand("h2", "H2", (state, api) => {
-  api.replaceSelection(`\n\n## ${state.selectedText || "Titolo sezione"}\n`);
-});
-const H3 = customCommand("h3", "H3", (state, api) => {
-  api.replaceSelection(`\n\n### ${state.selectedText || "Sottosezione"}\n`);
-});
-const QUOTE = customCommand("quote", "❝", (state, api) => {
-  const text = state.selectedText || "Citazione…";
-  api.replaceSelection(`\n\n> ${text}\n`);
-});
-const CODE = customCommand("codeblock", "</>", (state, api) => {
-  const text = state.selectedText || "codice";
-  api.replaceSelection(`\n\n\`\`\`\n${text}\n\`\`\`\n`);
-});
-const IMAGE = customCommand("image", "🖼", (state, api) => {
-  const alt = state.selectedText || "alt immagine";
-  api.replaceSelection(`![${alt}](https://...)`);
-});
-const LINK = customCommand("link", "🔗", (state, api) => {
-  const text = state.selectedText || "testo del link";
-  api.replaceSelection(`[${text}](https://...)`);
-});
-const UL = customCommand("ul", "•", (state, api) => {
-  const text = state.selectedText || "voce";
-  api.replaceSelection(`\n- ${text}\n- ...\n`);
-});
-
-export default function ContentEditor({
-  value,
-  onChange,
-  height = 460,
-}: {
+type Props = {
   value: string;
-  onChange: (v: string) => void;
+  onChange: (html: string) => void;
   height?: number;
-}) {
-  const toolbar = useMemo(
-    () => [H2, H3, "|", LINK, UL, QUOTE, CODE, IMAGE],
-    []
-  );
+};
+
+export default function ContentEditor({ value, onChange, height = 520 }: Props) {
+  const apiKey = process.env.NEXT_PUBLIC_TINYMCE_API_KEY || "";
 
   return (
-    <div data-color-mode="light" className="rounded-lg border overflow-hidden">
-      <MDEditor
+    <div className="rounded-xl border bg-white">
+      <Editor
+        apiKey={apiKey || undefined}
         value={value}
-        onChange={(v) => onChange(v || "")}
-        height={height}
-        visibleDragbar={false}
-        commands={toolbar as any}
-        preview="live" // editor+preview
+        onEditorChange={(content) => onChange(content)}
+        init={{
+          height,
+          menubar: true,
+          toolbar_sticky: true,
+          toolbar_mode: "sliding",
+          branding: false,
+          statusbar: true,
+          plugins:
+            "advlist anchor autolink charmap code codesample emoticons image link lists media searchreplace table visualblocks wordcount fullscreen preview",
+          toolbar:
+            "undo redo | blocks | bold italic underline forecolor backcolor | alignleft aligncenter alignright alignjustify | bullist numlist outdent indent | link image media table | blockquote codesample removeformat | fullscreen preview",
+          // Upload immagini verso WordPress
+          images_upload_handler: async (blobInfo) => {
+            const form = new FormData();
+            form.append("file", blobInfo.blob(), blobInfo.filename());
+            const r = await fetch("/api/wp/media", { method: "POST", body: form });
+            const data = await r.json();
+            if (!r.ok || !data?.source_url) throw new Error("Upload fallito");
+            return data.source_url as string;
+          },
+          automatic_uploads: true,
+          convert_urls: false,
+          content_style:
+            "body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.6} img{max-width:100%;height:auto}",
+        }}
       />
     </div>
   );
