@@ -27,7 +27,7 @@ export default function NavBar() {
           Nuovo Articolo
         </Link>
         <Link
-          href="/articles"
+          href="/posts"
           className="px-4 py-2 rounded-lg bg-gray-200 text-gray-800 hover:bg-gray-300"
         >
           Articoli
