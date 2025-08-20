@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import TinyEditor from "@/components/TinyEditor";
 import SeoAssistant from "@/components/SeoAssistant";
 import SerpPreview from "@/components/SerpPreview";
+import AiGenerateModal from "@/components/AiGenerateModal";
 
 type WpTaxItem = { id: number; name: string; slug: string };
 
@@ -12,12 +13,14 @@ type FormState = {
   excerpt: string; // meta-description
   contentHtml: string;
   categories: number[];
-  tags: string[];            // tag come testo (chip)
-  focusKw: string;           // keyphrase principale per Yoast
+  tags: string[]; // tag liberi (testo)
+  focusKw: string;
+
   // Immagine in evidenza
   featuredMediaId?: number;
   featuredMediaUrl?: string;
-  // SEO avanzato
+
+  // SEO avanzato (Yoast)
   seoTitle?: string;
   canonical?: string;
   primaryCategoryId?: number;
@@ -43,10 +46,8 @@ const emptyForm: FormState = {
   isCornerstone: false,
 };
 
-// URL WordPress da env (per eventuale Media Library popup)
 const WP_URL = (process.env.NEXT_PUBLIC_WP_URL || "").replace(/\/$/, "");
 
-// util per slug (Assistant SEO)
 function slugify(input: string) {
   return input
     .toLowerCase()
@@ -57,7 +58,6 @@ function slugify(input: string) {
     .slice(0, 90);
 }
 
-/** (Opzionale) apre popup wp-admin per la Media Library – lasciato com’è */
 function openWpMediaPicker() {
   if (!WP_URL) {
     alert("Config mancante: NEXT_PUBLIC_WP_URL");
@@ -78,7 +78,6 @@ function openWpMediaPicker() {
   );
 }
 
-/** (Opzionale) bridge per ricevere dal popup l’allegato selezionato */
 function MediaPickerBridge({
   onPicked,
 }: {
@@ -105,12 +104,12 @@ export default function ComposePage() {
   const [cats, setCats] = useState<WpTaxItem[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Autocomplete TAGS
   const [tagQuery, setTagQuery] = useState("");
   const [tagSuggestions, setTagSuggestions] = useState<WpTaxItem[]>([]);
   const [showTagSug, setShowTagSug] = useState(false);
 
-  // carica categorie
+  const [aiOpen, setAiOpen] = useState(false);
+
   useEffect(() => {
     (async () => {
       try {
@@ -120,7 +119,6 @@ export default function ComposePage() {
     })();
   }, []);
 
-  // suggerimenti tag
   useEffect(() => {
     const q = tagQuery.trim();
     if (!q) {
@@ -176,13 +174,11 @@ export default function ComposePage() {
     }));
   }
 
-  /** Risolve i tag testo → ID WP (crea se non esistono) */
   async function resolveTagIds(tagNames: string[]): Promise<number[]> {
     const names = [...new Set(tagNames.map((t) => t.trim()).filter(Boolean))];
     const ids: number[] = [];
     for (const name of names) {
       try {
-        // 1) cerca
         const search = await fetch(
           `/api/wp/taxonomy?type=tags&q=${encodeURIComponent(name)}&per_page=1`
         ).then((r) => r.json());
@@ -191,45 +187,40 @@ export default function ComposePage() {
           ids.push(Number(foundId));
           continue;
         }
-        // 2) crea
         const created = await fetch(`/api/wp/taxonomy`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ type: "tags", name }),
         }).then((r) => r.json());
         if (created?.id) ids.push(Number(created.id));
-      } catch {
-        // ignora errori singoli
-      }
+      } catch {}
     }
     return ids;
   }
 
-  /** NUOVO: salva stato e apri /preview */
-function handlePreview() {
-  try {
-    const payload = {
-      title: form.title,
-      excerpt: form.excerpt,
-      contentHtml: form.contentHtml,
-      featuredMediaUrl: form.featuredMediaUrl,
-      categories: form.categories
-        .map((id) => cats.find((c) => c.id === id))
-        .filter(Boolean)
-        .map((c) => ({ id: (c as any).id, name: (c as any).name })),
-      seoTitle: form.seoTitle,
-      canonical: form.canonical,
-      focusKw: form.focusKw,
-      tags: form.tags, // ← NEW: passa i tag per la preview
-    };
-    localStorage.setItem("alburninet_preview", JSON.stringify(payload));
-    window.open("/preview", "_blank");
-  } catch (e) {
-    alert("Impossibile aprire l’anteprima.");
+  function handlePreview() {
+    try {
+      const payload = {
+        title: form.title,
+        excerpt: form.excerpt,
+        contentHtml: form.contentHtml,
+        featuredMediaUrl: form.featuredMediaUrl,
+        categories: form.categories
+          .map((id) => cats.find((c) => c.id === id))
+          .filter(Boolean)
+          .map((c) => ({ id: (c as any).id, name: (c as any).name })),
+        seoTitle: form.seoTitle,
+        canonical: form.canonical,
+        focusKw: form.focusKw,
+        tags: form.tags,
+      };
+      localStorage.setItem("alburninet_preview", JSON.stringify(payload));
+      window.open("/preview", "_blank");
+    } catch {
+      alert("Impossibile aprire l’anteprima.");
+    }
   }
-}
 
-  /** submit robusto con errori leggibili + risoluzione tag → ids */
   async function submitToWP(status: "draft" | "publish") {
     setLoading(true);
     try {
@@ -246,8 +237,7 @@ function handlePreview() {
           categories: form.categories,
           tags: tagIds,
           featured_media: form.featuredMediaId,
-
-          // —— SEO / Yoast —— //
+          // Yoast
           seoTitle: form.seoTitle || form.title,
           metaDesc: form.excerpt,
           focusKw: form.focusKw,
@@ -272,16 +262,10 @@ function handlePreview() {
           (data && (data.error || data.message)) ||
           raw ||
           `HTTP ${res.status} ${res.statusText}`;
-        console.error("[POST /api/wp/posts] ERRORE:", {
-          status: res.status,
-          msg,
-          data,
-        });
         alert(`Salvataggio fallito: ${msg}`);
         return;
       }
 
-      // OK
       setForm(emptyForm);
       const go = window.confirm(
         status === "publish"
@@ -290,7 +274,6 @@ function handlePreview() {
       );
       if (go) window.location.href = "/posts";
     } catch (err: any) {
-      console.error("[POST /api/wp/posts] NETWORK ERROR:", err);
       alert(`Errore di rete: ${err?.message || err}`);
     } finally {
       setLoading(false);
@@ -301,13 +284,10 @@ function handlePreview() {
     if (confirm("Sicuro di ripulire il form?")) setForm(emptyForm);
   }
 
-  // === UI helpers per Tag ===
   function addTag(name: string) {
     const t = name.trim();
     if (!t) return;
-    setForm((s) =>
-      s.tags.includes(t) ? s : { ...s, tags: [...s.tags, t] }
-    );
+    setForm((s) => (s.tags.includes(t) ? s : { ...s, tags: [...s.tags, t] }));
     setTagQuery("");
     setShowTagSug(false);
   }
@@ -316,12 +296,10 @@ function handlePreview() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* GRID principale: contenuto + sidebar (ordine richiesto) */}
+    <div className="p-6 space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* COLONNA SINISTRA */}
         <div className="lg:col-span-2 space-y-6">
-          {/* CARD: Titolo */}
           <div className="bg-white rounded-xl shadow p-4">
             <label className="block text-sm font-medium mb-1">Titolo (H1)</label>
             <input
@@ -333,38 +311,33 @@ function handlePreview() {
             />
           </div>
 
-          {/* CARD: Estratto / Meta description */}
           <div className="bg-white rounded-xl shadow p-4">
             <label className="block text-sm font-medium mb-1">
               Estratto / Meta description
             </label>
             <textarea
               value={form.excerpt}
-              onChange={(e) =>
-                setForm((s) => ({ ...s, excerpt: e.target.value }))
-              }
+              onChange={(e) => setForm((s) => ({ ...s, excerpt: e.target.value }))}
               rows={3}
               placeholder="Breve riassunto (80–160 caratteri consigliati)…"
               className="w-full border rounded-lg px-3 py-2"
             />
           </div>
 
-          {/* CARD: Contenuto (TinyEditor) */}
           <div className="bg-white rounded-xl shadow p-4">
             <label className="block text-sm font-medium mb-2">Contenuto</label>
             <TinyEditor
               value={form.contentHtml}
               onChange={(html) => setForm((s) => ({ ...s, contentHtml: html }))}
               height={900}
-              placeholder="Scrivi qui il contenuto (puoi incollare anche da Word/Docs)…"
+              placeholder="Scrivi qui il contenuto…"
             />
           </div>
 
-          {/* >>> BOX: Tag & Keyphrase (sotto il contenuto) <<< */}
+          {/* TAG + KEYPHRASE */}
           <div className="bg-white rounded-xl shadow p-4">
             <div className="mb-4">
               <div className="text-sm font-medium mb-2">Tag</div>
-              {/* Input + chip + suggerimenti */}
               <div className="relative">
                 <div className="flex flex-wrap gap-2 mb-2">
                   {form.tags.map((t) => (
@@ -427,24 +400,25 @@ function handlePreview() {
               <input
                 type="text"
                 value={form.focusKw}
-                onChange={(e) =>
-                  setForm((s) => ({ ...s, focusKw: e.target.value }))
-                }
-                placeholder="Parola/frase chiave principale (es. 'escursione alburni estate')"
+                onChange={(e) => setForm((s) => ({ ...s, focusKw: e.target.value }))}
+                placeholder="Parola/frase chiave principale…"
                 className="w-full border rounded-lg px-3 py-2"
               />
-              <p className="text-xs text-gray-500 mt-2">
-                Usa la keyphrase nel titolo, nei primi paragrafi e nell’estratto per un punteggio Yoast migliore.
-              </p>
             </div>
           </div>
-          {/* <<< FINE BOX TAG & KEYPHRASE >>> */}
         </div>
 
         {/* SIDEBAR DESTRA */}
         <div className="space-y-6">
-          {/* 1) CARD: Pulsanti */}
+          {/* Pulsanti */}
           <div className="bg-white rounded-xl shadow p-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
+              onClick={() => setAiOpen(true)}
+            >
+              Genera con AI
+            </button>
             <button
               type="button"
               className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
@@ -477,11 +451,10 @@ function handlePreview() {
             </button>
           </div>
 
-          {/* 2) CARD: Immagine in evidenza */}
+          {/* Immagine in evidenza */}
           <div className="bg-white rounded-xl shadow p-4">
             <div className="text-sm font-medium mb-2">Immagine in evidenza</div>
 
-            {/* Listener messaggi dal popup WP (se lo usi) */}
             <MediaPickerBridge
               onPicked={(att) =>
                 setForm((s) => ({
@@ -555,7 +528,7 @@ function handlePreview() {
             </div>
           </div>
 
-          {/* 3) CARD: Categorie */}
+          {/* Categorie */}
           <div className="bg-white rounded-xl shadow p-4">
             <div className="text-sm font-medium mb-2">Categorie</div>
             <div className="flex flex-wrap gap-2">
@@ -578,14 +551,12 @@ function handlePreview() {
                 );
               })}
               {cats.length === 0 && (
-                <div className="text-sm text-gray-500">
-                  Nessuna categoria disponibile.
-                </div>
+                <div className="text-sm text-gray-500">Nessuna categoria disponibile.</div>
               )}
             </div>
           </div>
 
-          {/* 4) CARD: SEO Assistant + SERP */}
+          {/* Assistente SEO */}
           <div className="bg-white rounded-xl shadow p-4">
             <div className="text-sm font-medium mb-3">Assistente SEO</div>
             <SeoAssistant
@@ -605,7 +576,7 @@ function handlePreview() {
             </div>
           </div>
 
-          {/* 5) CARD: SEO avanzato (Yoast) */}
+          {/* SEO avanzato */}
           <div className="bg-white rounded-xl shadow p-4">
             <div className="text-sm font-medium mb-3">SEO avanzato</div>
 
@@ -677,9 +648,28 @@ function handlePreview() {
               </label>
             </div>
           </div>
-          {/* <<< FINE SEO avanzato >>> */}
         </div>
       </div>
+
+      {/* MODAL AI */}
+      <AiGenerateModal
+        open={aiOpen}
+        onClose={() => setAiOpen(false)}
+        onApply={(data) => {
+          setForm((s) => ({
+            ...s,
+            title: data.title || s.title,
+            seoTitle: data.seoTitle || data.title || s.seoTitle,
+            excerpt: data.excerpt || s.excerpt,
+            focusKw: data.focusKw || s.focusKw,
+            contentHtml: data.contentHtml || s.contentHtml,
+            tags:
+              data.tags?.length
+                ? Array.from(new Set([...(s.tags || []), ...data.tags]))
+                : s.tags,
+          }));
+        }}
+      />
     </div>
   );
 }

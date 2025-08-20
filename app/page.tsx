@@ -1,25 +1,42 @@
-// app/page.tsx
 "use client";
+
 import Link from "next/link";
 
-export default function HomePage() {
+export default function Home() {
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 px-6">
-      <h1 className="text-3xl font-bold mb-10">Alburninet Publisher</h1>
-      <div className="flex flex-col md:flex-row gap-6">
-        <Link
-          href="/compose"
-          className="px-10 py-6 bg-blue-600 text-white text-xl rounded-2xl shadow-lg hover:bg-blue-700 transition text-center"
-        >
-          Nuovo Articolo
-        </Link>
-        <Link
-          href="/posts"
-          className="px-10 py-6 bg-green-600 text-white text-xl rounded-2xl shadow-lg hover:bg-green-700 transition text-center"
-        >
-          Vedi Articoli
-        </Link>
+    <main className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+      <div className="max-w-4xl w-full">
+        <h1 className="text-2xl font-semibold mb-6">Alburninet Publisher</h1>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <Link
+            href="/compose"
+            className="rounded-2xl border bg-white hover:bg-gray-50 shadow p-6 text-center transition"
+          >
+            <div className="text-3xl mb-2">✍️</div>
+            <div className="font-medium text-lg">Nuovo Articolo</div>
+            <div className="text-sm text-gray-500 mt-1">Crea un nuovo post</div>
+          </Link>
+
+          <Link
+            href="/posts"
+            className="rounded-2xl border bg-white hover:bg-gray-50 shadow p-6 text-center transition"
+          >
+            <div className="text-3xl mb-2">📰</div>
+            <div className="font-medium text-lg">Vedi Articoli</div>
+            <div className="text-sm text-gray-500 mt-1">Bozze e pubblicati</div>
+          </Link>
+
+          <Link
+            href="/media"
+            className="rounded-2xl border bg-white hover:bg-gray-50 shadow p-6 text-center transition"
+          >
+            <div className="text-3xl mb-2">🖼️</div>
+            <div className="font-medium text-lg">Gestione Media WP</div>
+            <div className="text-sm text-gray-500 mt-1">Carica e gestisci file</div>
+          </Link>
+        </div>
       </div>
-    </div>
+    </main>
   );
 }

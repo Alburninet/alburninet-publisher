@@ -1,19 +1,44 @@
-// components/NavBar.tsx
 "use client";
+
 import Link from "next/link";
+import Image from "next/image";
 
 export default function NavBar() {
   return (
-    <nav className="w-full bg-white border-b shadow-sm mb-6">
-      <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-        <Link href="/" className="text-lg font-semibold text-gray-800">
-          Alburninet Publisher
+    <header className="flex items-center justify-between px-6 py-3 bg-white shadow-md">
+      {/* Logo a sinistra */}
+      <Link href="/" className="flex items-center space-x-2">
+        <Image
+          src="/logo.png"
+          alt="Alburninet"
+          width={40}
+          height={40}
+          className="rounded-full"
+        />
+        <span className="text-lg font-bold text-gray-800">Alburninet</span>
+      </Link>
+
+      {/* Pulsanti a destra */}
+      <nav className="flex space-x-4">
+        <Link
+          href="/compose"
+          className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+        >
+          Nuovo Articolo
         </Link>
-        <div className="flex gap-4">
-          <Link href="/compose" className="text-blue-600 hover:underline">Nuovo Articolo</Link>
-          <Link href="/posts" className="text-green-600 hover:underline">Vedi Articoli</Link>
-        </div>
-      </div>
-    </nav>
+        <Link
+          href="/articles"
+          className="px-4 py-2 rounded-lg bg-gray-200 text-gray-800 hover:bg-gray-300"
+        >
+          Articoli
+        </Link>
+        <Link
+          href="/media"
+          className="px-4 py-2 rounded-lg bg-gray-200 text-gray-800 hover:bg-gray-300"
+        >
+          Media
+        </Link>
+      </nav>
+    </header>
   );
 }
