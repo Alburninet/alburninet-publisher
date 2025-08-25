@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import NavBar from "@/components/NavBar";
 import NewsSourcesModal, { FeedSource } from "@/components/NewsSourcesModal";
 
 /* ========= Tipi ========= */
@@ -602,218 +603,221 @@ export default function HomeDashboard() {
 
   /* ========= RENDER ========= */
   return (
-    <main className="min-h-screen bg-gray-50 p-6">
-      <div className="max-w-7xl mx-auto">
-        {/* Header + Stats */}
-        <div className="mb-6 flex flex-col md:flex-row gap-4 md:items-center md:justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold">Dashboard Editoriale</h1>
-            <p className="text-gray-600">
-              Spazio denso di spunti da fonti locali, nazionali, internazionali e personalizzate.
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="bg-white rounded-xl shadow px-4 py-3">
-              <div className="text-xs text-gray-500">Articoli pubblicati</div>
-              <div className="text-xl font-semibold">
-                {counts.loading ? "—" : counts.published}
+    <>
+      <NavBar /> {/* ⬅️ Aggiunta: NavBar in Home */}
+      <main className="min-h-screen bg-gray-50 p-6">
+        <div className="max-w-7xl mx-auto">
+          {/* Header + Stats */}
+          <div className="mb-6 flex flex-col md:flex-row gap-4 md:items-center md:justify-between">
+            <div>
+              <h1 className="text-2xl font-semibold">Dashboard Editoriale</h1>
+              <p className="text-gray-600">
+                Spazio denso di spunti da fonti locali, nazionali, internazionali e personalizzate.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="bg-white rounded-xl shadow px-4 py-3">
+                <div className="text-xs text-gray-500">Articoli pubblicati</div>
+                <div className="text-xl font-semibold">
+                  {counts.loading ? "—" : counts.published}
+                </div>
+              </div>
+              <div className="bg-white rounded-xl shadow px-4 py-3">
+                <div className="text-xs text-gray-500">Bozze</div>
+                <div className="text-xl font-semibold">
+                  {counts.loading ? "—" : counts.drafts}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSourcesOpen(true)}
+                  className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
+                  title="Scegli feed RSS"
+                >
+                  Sorgenti
+                </button>
+                <button
+                  type="button"
+                  onClick={resetFilters}
+                  className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
+                  title="Riattiva tutte le fonti"
+                >
+                  Reset filtri
+                </button>
               </div>
             </div>
-            <div className="bg-white rounded-xl shadow px-4 py-3">
-              <div className="text-xs text-gray-500">Bozze</div>
-              <div className="text-xl font-semibold">
-                {counts.loading ? "—" : counts.drafts}
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setSourcesOpen(true)}
-                className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
-                title="Scegli feed RSS"
-              >
-                Sorgenti
-              </button>
-              <button
-                type="button"
-                onClick={resetFilters}
-                className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
-                title="Riattiva tutte le fonti"
-              >
-                Reset filtri
-              </button>
-            </div>
           </div>
-        </div>
 
-        {/* Barra “Pin per dopo” */}
-        {pins.length > 0 && (
-          <div className="mb-6 bg-white rounded-xl shadow p-3">
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-sm font-semibold">Salvati per dopo</div>
-              <div className="text-xs text-gray-500">{pins.length} elemento/i</div>
+          {/* Barra “Pin per dopo” */}
+          {pins.length > 0 && (
+            <div className="mb-6 bg-white rounded-xl shadow p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-semibold">Salvati per dopo</div>
+                <div className="text-xs text-gray-500">{pins.length} elemento/i</div>
+              </div>
+              <div className="flex gap-3 overflow-x-auto">
+                {pins.map((p) => (
+                  <div key={p.link} className="min-w-[220px] max-w-[260px] border rounded-lg p-2">
+                    <div className="text-xs font-medium line-clamp-2">{p.title}</div>
+                    <div className="mt-1 text-[11px] text-gray-500">{timeAgo(p.pubDateISO)}</div>
+                    <div className="mt-2 flex gap-2">
+                      <a
+                        href={p.link}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
+                      >
+                        Fonte
+                      </a>
+                      <button
+                        className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
+                        onClick={() => {
+                          localStorage.setItem(
+                            "alburninet_prefill",
+                            JSON.stringify({
+                              title: p.title || "",
+                              excerpt: "",
+                              contentHtml: `<p>Fonte: <a href="${p.link}" target="_blank" rel="nofollow noopener">${p.link}</a></p><p><br/></p>`,
+                              featuredMediaUrl: p.imageUrl || undefined,
+                              seoTitle: p.title || "",
+                              canonical: p.link || "",
+                              focusKw: "",
+                              tags: [],
+                            })
+                          );
+                          window.location.href = "/compose";
+                        }}
+                      >
+                        Crea bozza
+                      </button>
+                      <button
+                        className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
+                        onClick={() => unpin(p.link!)}
+                      >
+                        Rimuovi
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="flex gap-3 overflow-x-auto">
-              {pins.map((p) => (
-                <div key={p.link} className="min-w-[220px] max-w-[260px] border rounded-lg p-2">
-                  <div className="text-xs font-medium line-clamp-2">{p.title}</div>
-                  <div className="mt-1 text-[11px] text-gray-500">{timeAgo(p.pubDateISO)}</div>
-                  <div className="mt-2 flex gap-2">
-                    <a
-                      href={p.link}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
-                    >
-                      Fonte
-                    </a>
-                    <button
-                      className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
-                      onClick={() => {
-                        localStorage.setItem(
-                          "alburninet_prefill",
-                          JSON.stringify({
-                            title: p.title || "",
-                            excerpt: "",
-                            contentHtml: `<p>Fonte: <a href="${p.link}" target="_blank" rel="nofollow noopener">${p.link}</a></p><p><br/></p>`,
-                            featuredMediaUrl: p.imageUrl || undefined,
-                            seoTitle: p.title || "",
-                            canonical: p.link || "",
-                            focusKw: "",
-                            tags: [],
-                          })
+          )}
+
+          {err && (
+            <div className="mb-6 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {err}
+            </div>
+          )}
+
+          {/* Griglia colonne */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {columns.map(({ key, label }) => {
+              const packs = feeds.filter((f) => (f.group || "custom") === key);
+              const sourceKeys = packs.map((p) => p.key);
+              const enabledSet =
+                enabledByGroup[key].size > 0
+                  ? enabledByGroup[key]
+                  : new Set(sourceKeys);
+
+              // merge + sort + filtri
+              const merged = mergedForGroup(key).filter((it: any) =>
+                (enabledSet as Set<string>).has(it.__sourceKey)
+              );
+
+              // clustering
+              const clusters = clusterItems(merged);
+              const flat: any[] = [];
+              clusters.forEach((c) => {
+                flat.push({ ...c.head, __clusterSize: (c.others?.length || 0) + 1 });
+              });
+
+              const toShow = flat.slice(0, showCount[key]);
+
+              return (
+                <section key={key} className="bg-white rounded-xl shadow p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-lg font-semibold">{label}</h2>
+                    <div className="text-xs text-gray-500">
+                      {(enabledSet as Set<string>).size || packs.length} fonte/e
+                    </div>
+                  </div>
+
+                  {/* Filtri per fonte */}
+                  {packs.length > 0 && (
+                    <div className="mb-3 flex flex-wrap gap-2">
+                      {packs.map((p) => {
+                        const active = (enabledSet as Set<string>).has(p.key);
+                        return (
+                          <label
+                            key={p.key}
+                            className={`inline-flex items-center gap-2 px-2 py-1 rounded-full border text-xs cursor-pointer ${
+                              active ? "bg-black text-white border-black" : "bg-white"
+                            }`}
+                            title={p.name}
+                          >
+                            <input
+                              type="checkbox"
+                              className="hidden"
+                              checked={active}
+                              onChange={() => toggleSource(key, p.key)}
+                            />
+                            {p.name}
+                          </label>
                         );
-                        window.location.href = "/compose";
-                      }}
-                    >
-                      Crea bozza
-                    </button>
+                      })}
+                    </div>
+                  )}
+
+                  {/* Lista */}
+                  {loading ? (
+                    <div className="text-sm text-gray-500">Caricamento…</div>
+                  ) : toShow.length === 0 ? (
+                    <div className="text-sm text-gray-500">Nessuna notizia disponibile.</div>
+                  ) : (
+                    <ul className="space-y-3">
+                      {toShow.map((n: any, idx: number) => (
+                        <NewsCard
+                          key={(n.link || "") + idx}
+                          n={n}
+                          label={label}
+                          onPin={pinItem}
+                          onSummarize={summarizeAI}
+                        />
+                      ))}
+                    </ul>
+                  )}
+
+                  {/* “Mostra altri” + sentinella per autoload */}
+                  <div className="mt-3 flex items-center justify-between">
                     <button
-                      className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
-                      onClick={() => unpin(p.link!)}
+                      type="button"
+                      onClick={() => showMore(key)}
+                      className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 text-sm"
                     >
-                      Rimuovi
+                      Mostra altri
                     </button>
+                    <div ref={sentinels[key]} className="h-1 w-1" />
                   </div>
-                </div>
-              ))}
-            </div>
+                </section>
+              );
+            })}
           </div>
-        )}
-
-        {err && (
-          <div className="mb-6 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {err}
-          </div>
-        )}
-
-        {/* Griglia colonne */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {columns.map(({ key, label }) => {
-            const packs = feeds.filter((f) => (f.group || "custom") === key);
-            const sourceKeys = packs.map((p) => p.key);
-            const enabledSet =
-              enabledByGroup[key].size > 0
-                ? enabledByGroup[key]
-                : new Set(sourceKeys);
-
-            // merge + sort + filtri
-            const merged = mergedForGroup(key).filter((it: any) =>
-              (enabledSet as Set<string>).has(it.__sourceKey)
-            );
-
-            // clustering
-            const clusters = clusterItems(merged);
-            const flat: any[] = [];
-            clusters.forEach((c) => {
-              flat.push({ ...c.head, __clusterSize: (c.others?.length || 0) + 1 });
-            });
-
-            const toShow = flat.slice(0, showCount[key]);
-
-            return (
-              <section key={key} className="bg-white rounded-xl shadow p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-lg font-semibold">{label}</h2>
-                  <div className="text-xs text-gray-500">
-                    {(enabledSet as Set<string>).size || packs.length} fonte/e
-                  </div>
-                </div>
-
-                {/* Filtri per fonte */}
-                {packs.length > 0 && (
-                  <div className="mb-3 flex flex-wrap gap-2">
-                    {packs.map((p) => {
-                      const active = (enabledSet as Set<string>).has(p.key);
-                      return (
-                        <label
-                          key={p.key}
-                          className={`inline-flex items-center gap-2 px-2 py-1 rounded-full border text-xs cursor-pointer ${
-                            active ? "bg-black text-white border-black" : "bg-white"
-                          }`}
-                          title={p.name}
-                        >
-                          <input
-                            type="checkbox"
-                            className="hidden"
-                            checked={active}
-                            onChange={() => toggleSource(key, p.key)}
-                          />
-                          {p.name}
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* Lista */}
-                {loading ? (
-                  <div className="text-sm text-gray-500">Caricamento…</div>
-                ) : toShow.length === 0 ? (
-                  <div className="text-sm text-gray-500">Nessuna notizia disponibile.</div>
-                ) : (
-                  <ul className="space-y-3">
-                    {toShow.map((n: any, idx: number) => (
-                      <NewsCard
-                        key={(n.link || "") + idx}
-                        n={n}
-                        label={label}
-                        onPin={pinItem}
-                        onSummarize={summarizeAI}
-                      />
-                    ))}
-                  </ul>
-                )}
-
-                {/* “Mostra altri” + sentinella per autoload */}
-                <div className="mt-3 flex items-center justify-between">
-                  <button
-                    type="button"
-                    onClick={() => showMore(key)}
-                    className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 text-sm"
-                  >
-                    Mostra altri
-                  </button>
-                  <div ref={sentinels[key]} className="h-1 w-1" />
-                </div>
-              </section>
-            );
-          })}
         </div>
-      </div>
 
-      {/* Modal Sorgenti */}
-      <NewsSourcesModal
-        open={sourcesOpen}
-        onClose={() => setSourcesOpen(false)}
-        initial={currentSources || undefined}
-        onSave={(sources) => {
-          try {
-            localStorage.setItem(LS_SOURCES, JSON.stringify(sources));
-          } catch {}
-          loadFeeds();
-        }}
-      />
-    </main>
+        {/* Modal Sorgenti */}
+        <NewsSourcesModal
+          open={sourcesOpen}
+          onClose={() => setSourcesOpen(false)}
+          initial={currentSources || undefined}
+          onSave={(sources) => {
+            try {
+              localStorage.setItem(LS_SOURCES, JSON.stringify(sources));
+            } catch {}
+            loadFeeds();
+          }}
+        />
+      </main>
+    </>
   );
 }

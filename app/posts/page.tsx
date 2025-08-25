@@ -1,210 +1,110 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React from "react";
+import NavBar from "@/components/NavBar";
 
-type WpPost = {
+type WPPost = {
   id: number;
-  date: string;
-  modified: string;
-  status: "publish" | "draft";
-  link: string;
+  date?: string;
   title?: { rendered?: string };
-  excerpt?: { rendered?: string };
+  link?: string;
+  status?: string;
 };
 
-type ApiList = WpPost[];
-
-/* UI helpers */
-function fmtDate(iso: string) {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+async function fetchJson(url: string) {
+  const r = await fetch(url, { cache: "no-store" });
+  const t = await r.text();
+  try { return { ok: r.ok, data: t ? JSON.parse(t) : null }; }
+  catch { return { ok: false, data: t }; }
 }
 
 export default function PostsPage() {
-  const [status, setStatus] = useState<"all" | "publish" | "draft">("all");
-  const [q, setQ] = useState("");
-  const [page, setPage] = useState(1);
-  const [perPage] = useState(20);
+  const [pub, setPub] = React.useState<WPPost[]>([]);
+  const [draft, setDraft] = React.useState<WPPost[]>([]);
+  const [err, setErr] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(true);
 
-  const [items, setItems] = useState<WpPost[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [hasNext, setHasNext] = useState(false);
-
-  const empty = useMemo(() => items.length === 0, [items]);
-
-  async function fetchOne(st: "publish" | "draft", pg: number) {
-    const res = await fetch(
-      `/api/wp/posts?status=${st}&page=${pg}&per_page=${perPage}`,
-      { cache: "no-store" }
-    );
-    if (!res.ok) throw new Error(await res.text());
-    return (await res.json()) as ApiList;
-  }
-
-  async function load() {
-    setLoading(true);
-    try {
-      let data: WpPost[] = [];
-      if (status === "all") {
-        const [pub, dr] = await Promise.all([fetchOne("publish", page), fetchOne("draft", page)]);
-        data = [...pub, ...dr].sort(
-          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-        );
-        // stima grezza next: se almeno uno dei due ha lunghezza piena
-        setHasNext(pub.length === perPage || dr.length === perPage);
-      } else {
-        const list = await fetchOne(status, page);
-        data = list;
-        setHasNext(list.length === perPage);
+  React.useEffect(() => {
+    let abort = false;
+    (async () => {
+      setLoading(true); setErr(null);
+      try {
+        const [p1, p2] = await Promise.all([
+          fetchJson("/api/wp/posts?status=publish&page=1"),
+          fetchJson("/api/wp/posts?status=draft&page=1"),
+        ]);
+        if (abort) return;
+        if (p1.ok) setPub(Array.isArray(p1.data) ? p1.data : p1.data?.items || []);
+        if (p2.ok) setDraft(Array.isArray(p2.data) ? p2.data : p2.data?.items || []);
+        if (!p1.ok && !p2.ok) setErr("Errore nel caricamento degli articoli");
+      } catch (e: any) {
+        if (!abort) setErr(e?.message || "Errore rete");
+      } finally {
+        if (!abort) setLoading(false);
       }
-
-      // filtro client-side di cortesia (se /api non supporta ?search)
-      const filtered = q.trim()
-        ? data.filter((p) => {
-            const t = p.title?.rendered?.toLowerCase() || "";
-            const e = p.excerpt?.rendered?.toLowerCase() || "";
-            const needle = q.trim().toLowerCase();
-            return t.includes(needle) || e.includes(needle);
-          })
-        : data;
-
-      setItems(filtered);
-    } catch (e) {
-      console.error("Errore caricamento articoli:", e);
-      setItems([]);
-      setHasNext(false);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, page]);
-
-  function applyFilters() {
-    setPage(1);
-    load();
-  }
+    })();
+    return () => { abort = true; };
+  }, []);
 
   return (
-    <div className="space-y-8">
-      {/* Titolo pagina */}
-      <h1 className="text-3xl font-semibold">Articoli</h1>
+    <div className="min-h-screen bg-gray-50">
+      <NavBar />
+      <main className="mx-auto max-w-7xl p-4 md:p-6">
+        <h1 className="text-2xl font-semibold mb-4">Articoli</h1>
 
-      {/* Barra filtri (nessuna Navbar qui) */}
-      <div className="flex flex-wrap items-center gap-3">
-        <select
-          value={status}
-          onChange={(e) => {
-            setStatus(e.target.value as any);
-            setPage(1);
-          }}
-          className="border rounded-lg px-3 py-2"
-        >
-          <option value="all">Tutti gli stati</option>
-          <option value="publish">Pubblicati</option>
-          <option value="draft">Bozze</option>
-        </select>
+        {err && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-700">{err}</div>}
 
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Cerca per titolo/contenuto..."
-          className="flex-1 min-w-[260px] border rounded-lg px-3 py-2"
-        />
-
-        <button
-          onClick={applyFilters}
-          className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
-        >
-          Applica
-        </button>
-      </div>
-
-      {/* Lista / tabella */}
-      <div className="bg-white rounded-xl shadow">
-        <div className="p-4">
-          {loading ? (
-            <div className="text-sm text-gray-500">Caricamento…</div>
-          ) : empty ? (
-            <div className="text-sm text-gray-500">Nessun articolo trovato.</div>
-          ) : (
-            <ul className="divide-y">
-              {items.map((p) => (
-                <li key={p.id} className="py-3">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${
-                            p.status === "publish"
-                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                              : "bg-amber-50 text-amber-700 border-amber-200"
-                          }`}
-                        >
-                          {p.status === "publish" ? "Pubblicato" : "Bozza"}
-                        </span>
-                        <a
-                          href={p.link}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="font-medium hover:underline truncate"
-                          title="Apri sul sito"
-                        >
-                          {p.title?.rendered || "(senza titolo)"}
-                        </a>
-                      </div>
-                      <div
-                        className="prose prose-sm text-gray-600 mt-1 line-clamp-2"
-                        dangerouslySetInnerHTML={{
-                          __html: p.excerpt?.rendered || "",
-                        }}
-                      />
-                      <div className="text-xs text-gray-500 mt-1">
-                        creato: {fmtDate(p.date)} · modificato: {fmtDate(p.modified)}
-                      </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <section className="rounded-xl border bg-white p-4">
+            <h2 className="font-semibold mb-3">Pubblicati</h2>
+            {loading ? (
+              <div className="text-sm text-gray-500">Caricamento…</div>
+            ) : pub.length === 0 ? (
+              <div className="text-sm text-gray-500">Nessun articolo pubblicato.</div>
+            ) : (
+              <ul className="space-y-2">
+                {pub.map((p) => (
+                  <li key={p.id} className="rounded-lg border p-3 bg-white">
+                    <div className="font-medium line-clamp-2">{p.title?.rendered || `#${p.id}`}</div>
+                    <div className="text-xs text-gray-500 mt-1">{new Date(p.date || "").toLocaleString()}</div>
+                    <div className="mt-2 flex gap-2">
+                      <a href={`/compose?postId=${p.id}`} className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs">Apri</a>
+                      {p.link && (
+                        <a href={p.link} target="_blank" rel="noreferrer" className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs">Vedi sul sito</a>
+                      )}
                     </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
 
-                    <div className="shrink-0 flex items-center gap-2">
-                      <a
-                        href={p.link}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 text-sm"
-                      >
-                        Apri
-                      </a>
+          <section className="rounded-xl border bg-white p-4">
+            <h2 className="font-semibold mb-3">Bozze</h2>
+            {loading ? (
+              <div className="text-sm text-gray-500">Caricamento…</div>
+            ) : draft.length === 0 ? (
+              <div className="text-sm text-gray-500">Nessuna bozza.</div>
+            ) : (
+              <ul className="space-y-2">
+                {draft.map((p) => (
+                  <li key={p.id} className="rounded-lg border p-3 bg-white">
+                    <div className="font-medium line-clamp-2">{p.title?.rendered || `#${p.id}`}</div>
+                    <div className="text-xs text-gray-500 mt-1">{new Date(p.date || "").toLocaleString()}</div>
+                    <div className="mt-2 flex gap-2">
+                      <a href={`/compose?postId=${p.id}`} className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs">Apri</a>
+                      <button className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs" onClick={() => {
+                        localStorage.setItem("alburninet_prefill", JSON.stringify({ title: p.title?.rendered || "", excerpt: "", contentHtml: "", tags: [] }));
+                        window.location.href = "/compose";
+                      }}>Crea bozza</button>
                     </div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
         </div>
-      </div>
-
-      {/* Paginazione semplice */}
-      <div className="flex items-center gap-3">
-        <button
-          disabled={page <= 1 || loading}
-          onClick={() => setPage((p) => Math.max(1, p - 1))}
-          className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 disabled:opacity-50"
-        >
-          ← Precedente
-        </button>
-        <button
-          disabled={!hasNext || loading}
-          onClick={() => setPage((p) => p + 1)}
-          className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 disabled:opacity-50"
-        >
-          Successiva →
-        </button>
-      </div>
+      </main>
     </div>
   );
 }

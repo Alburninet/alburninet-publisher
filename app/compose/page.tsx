@@ -1,675 +1,649 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import TinyEditor from "@/components/TinyEditor";
-import SeoAssistant from "@/components/SeoAssistant";
-import SerpPreview from "@/components/SerpPreview";
-import AiGenerateModal from "@/components/AiGenerateModal";
+import React from "react";
+import Link from "next/link";
+import SEOAssistant from "@/components/SeoAssistant";
+import ContentEditor from "@/components/ContentEditor";
+import NavBar from "@/components/NavBar"; // 👈 navbar esplicita qui
 
-type WpTaxItem = { id: number; name: string; slug: string };
+/* ===========================
+   Helper locali per le API WP
+   =========================== */
 
-type FormState = {
+type CreatePayload = {
   title: string;
-  excerpt: string; // meta-description
+  slug?: string;
+  excerpt?: string;
   contentHtml: string;
-  categories: number[];
-  tags: string[]; // tag liberi (testo)
-  focusKw: string;
-
-  // Immagine in evidenza
-  featuredMediaId?: number;
+  tags?: string[];
+  categories?: number[];
   featuredMediaUrl?: string;
-
-  // SEO avanzato (Yoast)
-  seoTitle?: string;
-  canonical?: string;
-  primaryCategoryId?: number;
-  noindex?: boolean;
-  nofollow?: boolean;
-  isCornerstone?: boolean;
+  yoast?: {
+    focusKw?: string;
+    title?: string;
+    metadesc?: string;
+    canonical?: string;
+    noindex?: boolean;
+    nofollow?: boolean;
+    cornerstone?: boolean;
+  };
+  status: "draft" | "publish";
 };
 
-const emptyForm: FormState = {
-  title: "",
-  excerpt: "",
-  contentHtml: "",
-  categories: [],
-  tags: [],
-  focusKw: "",
-  featuredMediaId: undefined,
-  featuredMediaUrl: undefined,
-  seoTitle: "",
-  canonical: "",
-  primaryCategoryId: undefined,
-  noindex: false,
-  nofollow: false,
-  isCornerstone: false,
-};
-
-const WP_URL = (process.env.NEXT_PUBLIC_WP_URL || "").replace(/\/$/, "");
-
-function slugify(input: string) {
-  return input
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "")
-    .slice(0, 90);
+async function fetchCategories(): Promise<Array<{ id: number; name: string }>> {
+  const r = await fetch("/api/wp/taxonomy?type=categories&per_page=100", { cache: "no-store" });
+  const j = await r.json().catch(() => ({}));
+  const items = Array.isArray(j) ? j : j?.items || [];
+  return items.map((c: any) => ({ id: c.id, name: c.name }));
 }
 
-function openWpMediaPicker() {
-  if (!WP_URL) {
-    alert("Config mancante: NEXT_PUBLIC_WP_URL");
-    return;
-  }
-  const origin = window.location.origin;
-  const pickerUrl = `${WP_URL}/wp-admin/admin.php?page=alburninet-media-picker&origin=${encodeURIComponent(
-    origin
-  )}`;
-  const w = 980;
-  const h = 800;
-  const left = window.screenX + (window.outerWidth - w) / 2;
-  const top = window.screenY + (window.outerHeight - h) / 2;
-  window.open(
-    pickerUrl,
-    "alburninetMediaPicker",
-    `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`
-  );
+async function saveDraftApi(payload: Omit<CreatePayload, "status">) {
+  const r = await fetch("/api/wp/posts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, status: "draft" }),
+  });
+  if (!r.ok) throw new Error("Draft save failed");
+  return r.json();
 }
 
-function MediaPickerBridge({
-  onPicked,
-}: {
-  onPicked: (att: { id: number; url: string; alt?: string }) => void;
-}) {
-  React.useEffect(() => {
-    function handler(ev: MessageEvent) {
-      const data = ev.data;
-      if (!data || data.type !== "ALBURNINET_MEDIA_PICKED") return;
-      try {
-        const a = data.attachment || {};
-        if (a.id && a.url) onPicked({ id: a.id, url: a.url, alt: a.alt });
-      } catch {}
-    }
-    window.addEventListener("message", handler);
-    return () => window.removeEventListener("message", handler);
-  }, [onPicked]);
-
-  return null;
+async function publishPostApi(payload: Omit<CreatePayload, "status">) {
+  const r = await fetch("/api/wp/posts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, status: "publish" }),
+  });
+  if (!r.ok) throw new Error("Publish failed");
+  return r.json();
 }
+
+async function uploadFeaturedFromUrlApi(url: string) {
+  const r = await fetch("/api/wp/media", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  if (!r.ok) throw new Error("Upload media failed");
+  return r.json();
+}
+
+/* ==============
+   Tipi locali
+   ============== */
+type Category = { id: number; name: string };
+type SaveState = "idle" | "saving" | "success" | "error";
+
+/* ==================
+   Pagina Compose
+   ================== */
 
 export default function ComposePage() {
-  const [form, setForm] = useState<FormState>(emptyForm);
-  const [cats, setCats] = useState<WpTaxItem[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Campi base
+  const [title, setTitle] = React.useState("");
+  const [slug, setSlug] = React.useState(""); // 👈 nascosto in UI
+  const [excerpt, setExcerpt] = React.useState(""); // 👈 sotto il titolo
+  const [contentHtml, setContentHtml] = React.useState("");
 
-  const [tagQuery, setTagQuery] = useState("");
-  const [tagSuggestions, setTagSuggestions] = useState<WpTaxItem[]>([]);
-  const [showTagSug, setShowTagSug] = useState(false);
+  // SEO
+  const [seoTitle, setSeoTitle] = React.useState("");
+  const [focusKw, setFocusKw] = React.useState("");
+  const [canonical, setCanonical] = React.useState("");
+  const [noindex, setNoindex] = React.useState(false);
+  const [nofollow, setNofollow] = React.useState(false);
+  const [cornerstone, setCornerstone] = React.useState(false);
 
-  const [aiOpen, setAiOpen] = useState(false);
+  // Tag
+  const [tags, setTags] = React.useState<string[]>([]);
+  const [newTag, setNewTag] = React.useState("");
 
-  useEffect(() => {
+  // Categorie
+  const [categories, setCategories] = React.useState<Category[]>([]);
+  const [selectedCats, setSelectedCats] = React.useState<number[]>([]);
+
+  // Immagine in evidenza
+  const [featuredUrl, setFeaturedUrl] = React.useState<string | null>(null);
+
+  // AI
+  const [aiOpen, setAiOpen] = React.useState(false);
+
+  // Stato salvataggio
+  const [saving, setSaving] = React.useState<SaveState>("idle");
+
+  // Carica categorie + eventuale prefilling da Dashboard
+  React.useEffect(() => {
     (async () => {
       try {
-        const c = await fetch("/api/wp/categories").then((r) => r.json());
-        setCats(Array.isArray(c) ? c : []);
+        const cats = await fetchCategories();
+        setCategories(cats);
       } catch {}
     })();
+
+    try {
+      const raw = localStorage.getItem("alburninet_prefill");
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p.title) setTitle(p.title);
+        if (p.contentHtml) setContentHtml(p.contentHtml);
+        if (p.excerpt) setExcerpt(p.excerpt);
+        if (p.seoTitle) setSeoTitle(p.seoTitle);
+        if (p.featuredMediaUrl) setFeaturedUrl(p.featuredMediaUrl);
+        if (p.canonical) setCanonical(p.canonical);
+        localStorage.removeItem("alburninet_prefill");
+      }
+    } catch {}
   }, []);
 
-  useEffect(() => {
-    const q = tagQuery.trim();
-    if (!q) {
-      setTagSuggestions([]);
-      return;
-    }
-    const ctrl = new AbortController();
-    (async () => {
-      try {
-        const res = await fetch(
-          `/api/wp/taxonomy?type=tags&q=${encodeURIComponent(q)}&per_page=10`,
-          { signal: ctrl.signal }
-        );
-        const items = await res.json();
-        if (Array.isArray(items)) setTagSuggestions(items);
-      } catch {}
-    })();
-    return () => ctrl.abort();
-  }, [tagQuery]);
-
-  const canPublish = useMemo(
-    () =>
-      form.title.trim().length > 0 &&
-      form.excerpt.trim().length > 0 &&
-      form.contentHtml.trim().length > 0,
-    [form]
-  );
-
-  function toggleCategory(id: number) {
-    setForm((s) =>
-      s.categories.includes(id)
-        ? { ...s, categories: s.categories.filter((x) => x !== id) }
-        : { ...s, categories: [...s.categories, id] }
-    );
+  // Tag
+  function addTag() {
+    const t = newTag.trim();
+    if (!t) return;
+    if (!tags.includes(t)) setTags((prev) => [...prev, t]);
+    setNewTag("");
+  }
+  function removeTag(t: string) {
+    setTags((prev) => prev.filter((x) => x !== t));
   }
 
-  async function handleUploadFeatured(file: File) {
-    const fd = new FormData();
-    fd.append("file", file);
-    const res = await fetch("/api/wp/upload", { method: "POST", body: fd });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert(err?.error || "Upload immagine fallito");
-      return;
-    }
-    const j = await res.json();
-    const url =
-      j?.source_url || j?.guid?.rendered || j?.url || j?.data?.source_url;
-    setForm((s) => ({
-      ...s,
-      featuredMediaId: j?.id,
-      featuredMediaUrl: url,
-    }));
+  // Categorie
+  function toggleCat(id: number) {
+    setSelectedCats((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
-  async function resolveTagIds(tagNames: string[]): Promise<number[]> {
-    const names = [...new Set(tagNames.map((t) => t.trim()).filter(Boolean))];
-    const ids: number[] = [];
-    for (const name of names) {
-      try {
-        const search = await fetch(
-          `/api/wp/taxonomy?type=tags&q=${encodeURIComponent(name)}&per_page=1`
-        ).then((r) => r.json());
-        const foundId = Array.isArray(search) && search[0]?.id ? search[0].id : null;
-        if (foundId) {
-          ids.push(Number(foundId));
-          continue;
-        }
-        const created = await fetch(`/api/wp/taxonomy`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ type: "tags", name }),
-        }).then((r) => r.json());
-        if (created?.id) ids.push(Number(created.id));
-      } catch {}
-    }
-    return ids;
-  }
-
-  function handlePreview() {
+  // Immagine evidenza
+  async function onUploadFeaturedFromUrl() {
+    if (!featuredUrl) return;
     try {
-      const payload = {
-        title: form.title,
-        excerpt: form.excerpt,
-        contentHtml: form.contentHtml,
-        featuredMediaUrl: form.featuredMediaUrl,
-        categories: form.categories
-          .map((id) => cats.find((c) => c.id === id))
-          .filter(Boolean)
-          .map((c) => ({ id: (c as any).id, name: (c as any).name })),
-        seoTitle: form.seoTitle,
-        canonical: form.canonical,
-        focusKw: form.focusKw,
-        tags: form.tags,
-      };
-      localStorage.setItem("alburninet_preview", JSON.stringify(payload));
-      window.open("/preview", "_blank");
+      setSaving("saving");
+      await uploadFeaturedFromUrlApi(featuredUrl);
+      setSaving("success");
+      setTimeout(() => setSaving("idle"), 900);
     } catch {
-      alert("Impossibile aprire l’anteprima.");
+      setSaving("error");
+      setTimeout(() => setSaving("idle"), 1400);
     }
   }
 
-  async function submitToWP(status: "draft" | "publish") {
-    setLoading(true);
+  // Salva/Pubblica
+  async function onSaveDraft() {
     try {
-      const tagIds = await resolveTagIds(form.tags);
+      setSaving("saving");
+      await saveDraftApi({
+        title,
+        slug,
+        excerpt,
+        contentHtml,
+        tags,
+        categories: selectedCats,
+        featuredMediaUrl: featuredUrl || undefined,
+        yoast: {
+          focusKw,
+          title: seoTitle || title,
+          metadesc: excerpt || "", // continua ad andare a Yoast come metadesc (il campo è quello “Estratto”)
+          canonical: canonical || undefined,
+          noindex,
+          nofollow,
+          cornerstone,
+        },
+      });
+      setSaving("success");
+      setTimeout(() => setSaving("idle"), 1000);
+    } catch {
+      setSaving("error");
+      setTimeout(() => setSaving("idle"), 1500);
+    }
+  }
 
-      const res = await fetch("/api/wp/posts", {
+  async function onPublish() {
+    try {
+      setSaving("saving");
+      await publishPostApi({
+        title,
+        slug,
+        excerpt,
+        contentHtml,
+        tags,
+        categories: selectedCats,
+        featuredMediaUrl: featuredUrl || undefined,
+        yoast: {
+          focusKw,
+          title: seoTitle || title,
+          metadesc: excerpt || "",
+          canonical: canonical || undefined,
+          noindex,
+          nofollow,
+          cornerstone,
+        },
+      });
+      setSaving("success");
+      setTimeout(() => setSaving("idle"), 1000);
+    } catch {
+      setSaving("error");
+      setTimeout(() => setSaving("idle"), 1500);
+    }
+  }
+
+  // Pulisci
+  function onReset() {
+    setTitle("");
+    setSlug("");
+    setExcerpt("");
+    setContentHtml("");
+    setTags([]);
+    setSelectedCats([]);
+    setSeoTitle("");
+    setFocusKw("");
+    setCanonical("");
+    setNoindex(false);
+    setNofollow(false);
+    setCornerstone(false);
+    setFeaturedUrl(null);
+  }
+
+  return (
+    <>
+      {/* NAVBAR in cima (full width) */}
+      <NavBar />
+
+      <main className="min-h-screen bg-gray-50 p-6">
+        <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6">
+          {/* COLONNA SINISTRA */}
+          <section className="space-y-4">
+            {/* Titolo */}
+            <div className="bg-white rounded-xl shadow p-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Titolo (H1)</label>
+              <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Titolo dell’articolo"
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-black/5"
+              />
+            </div>
+
+            {/* SLUG (nascosto ma presente) */}
+            <div className="hidden" aria-hidden>
+              <input type="text" value={slug} onChange={(e) => setSlug(e.target.value)} tabIndex={-1} />
+            </div>
+
+            {/* Estratto / Meta description */}
+            <div className="bg-white rounded-xl shadow p-4">
+              <label className="block text-sm font-medium text-gray-700">
+                Estratto / Meta description{" "}
+                <span className="text-gray-400 text-xs">(80–160 caratteri consigliati)</span>
+              </label>
+              <textarea
+                value={excerpt}
+                onChange={(e) => setExcerpt(e.target.value)}
+                rows={3}
+                placeholder="Breve riassunto dell’articolo…"
+                className="mt-2 w-full rounded-lg border border-gray-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-black/5"
+              />
+            </div>
+
+            {/* Contenuto */}
+            <div className="bg-white rounded-xl shadow p-0">
+              <div className="px-4 pt-4">
+                <div className="text-sm font-medium text-gray-700">Contenuto</div>
+              </div>
+              <div className="p-4 pt-2">
+                <ContentEditor value={contentHtml} onChange={setContentHtml} />
+              </div>
+            </div>
+
+            {/* Tag */}
+            <div className="bg-white rounded-xl shadow p-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Tag</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newTag}
+                  onChange={(e) => setNewTag(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addTag();
+                    }
+                  }}
+                  placeholder="Aggiungi tag e premi Invio…"
+                  className="flex-1 rounded-lg border border-gray-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-black/5"
+                />
+                <button
+                  type="button"
+                  onClick={addTag}
+                  className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
+                >
+                  Aggiungi
+                </button>
+              </div>
+              {!!tags.length && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {tags.map((t) => (
+                    <span
+                      key={t}
+                      className="inline-flex items-center gap-2 px-2 py-1 rounded-full border text-sm"
+                    >
+                      {t}
+                      <button
+                        type="button"
+                        className="text-gray-400 hover:text-gray-600"
+                        onClick={() => removeTag(t)}
+                        aria-label={`Rimuovi ${t}`}
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <p className="mt-2 text-xs text-gray-500">
+                Suggerimento: 4–8 tag pertinenti aiutano l’organizzazione e la SEO.
+              </p>
+            </div>
+
+            {/* Focus keyphrase (box centrale principale) */}
+            <div className="bg-white rounded-xl shadow p-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Focus keyphrase (Yoast)
+              </label>
+              <input
+                type="text"
+                value={focusKw}
+                onChange={(e) => setFocusKw(e.target.value)}
+                placeholder="Parola/frase chiave principale…"
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-black/5"
+              />
+            </div>
+          </section>
+
+          {/* COLONNA DESTRA */}
+          <aside className="space-y-4">
+            {/* Azioni */}
+            <div className="bg-white rounded-xl shadow p-4">
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <button
+                  type="button"
+                  onClick={() => setAiOpen(true)}
+                  className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
+                >
+                  Genera con AI
+                </button>
+                <Link
+                  href="/preview"
+                  className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 text-center"
+                >
+                  Anteprima
+                </Link>
+                <button
+                  type="button"
+                  onClick={onSaveDraft}
+                  disabled={saving === "saving"}
+                  className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
+                >
+                  Salva bozza
+                </button>
+                <button
+                  type="button"
+                  onClick={onPublish}
+                  disabled={saving === "saving"}
+                  className="px-3 py-2 rounded-lg bg-black text-white hover:bg-black/90"
+                >
+                  Pubblica
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={onReset}
+                className="w-full px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
+              >
+                Pulisci
+              </button>
+              {saving === "saving" && <p className="mt-2 text-sm text-gray-500">Salvataggio…</p>}
+              {saving === "success" && <p className="mt-2 text-sm text-green-600">Fatto!</p>}
+              {saving === "error" && (
+                <p className="mt-2 text-sm text-red-600">Errore durante il salvataggio.</p>
+              )}
+            </div>
+
+            {/* Immagine in evidenza */}
+            <div className="bg-white rounded-xl shadow p-4">
+              <div className="text-sm font-medium text-gray-700 mb-2">Immagine in evidenza</div>
+              <div className="aspect-video w-full rounded-lg border border-dashed grid place-items-center text-sm text-gray-400">
+                {featuredUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={featuredUrl} alt="" className="w-full h-full object-cover rounded-lg" />
+                ) : (
+                  <span>Nessuna immagine</span>
+                )}
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <label className="col-span-2">
+                  <span className="sr-only">URL immagine</span>
+                  <input
+                    type="url"
+                    value={featuredUrl || ""}
+                    onChange={(e) => setFeaturedUrl(e.target.value || null)}
+                    placeholder="Incolla URL immagine…"
+                    className="w-full rounded-lg border border-gray-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-black/5"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={onUploadFeaturedFromUrl}
+                  className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
+                >
+                  Carica immagine
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.alert("Libreria Media in sospeso")}
+                  className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
+                >
+                  Seleziona dalla Libreria Media
+                </button>
+              </div>
+            </div>
+
+            {/* Categorie */}
+            <div className="bg-white rounded-xl shadow p-4">
+              <div className="text-sm font-medium text-gray-700 mb-2">Categorie</div>
+              <div className="flex flex-wrap gap-2">
+                {categories.map((c) => {
+                  const active = selectedCats.includes(c.id);
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => toggleCat(c.id)}
+                      className={`px-3 py-1 rounded-full border text-sm ${
+                        active ? "bg-black text-white border-black" : "bg-white"
+                      }`}
+                    >
+                      {c.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Assistente SEO */}
+            <div className="bg-white rounded-xl shadow p-4">
+              <SEOAssistant
+                title={title}
+                slug={slug}
+                contentHtml={contentHtml}
+                seoTitle={seoTitle || title}
+                seoDescription={excerpt} // l’assistente usa l’estratto come metadesc
+                focusKw={focusKw}
+              />
+            </div>
+
+            {/* SEO avanzato — senza il campo “Focus keyphrase” */}
+            <div className="bg-white rounded-xl shadow p-4">
+              <div className="text-sm font-medium text-gray-700 mb-2">SEO avanzato</div>
+
+              <label className="block text-xs text-gray-600 mb-1">Titolo SEO (opzionale)</label>
+              <input
+                type="text"
+                value={seoTitle}
+                onChange={(e) => setSeoTitle(e.target.value)}
+                placeholder="Se vuoto usa il Titolo"
+                className="mb-3 w-full rounded-lg border border-gray-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-black/5"
+              />
+
+              <label className="block text-xs text-gray-600 mb-1">Canonical URL</label>
+              <input
+                type="url"
+                value={canonical}
+                onChange={(e) => setCanonical(e.target.value)}
+                placeholder="https://esempio.it/articolo"
+                className="mb-3 w-full rounded-lg border border-gray-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-black/5"
+              />
+
+              <div className="flex items-center gap-3 text-xs text-gray-600">
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={noindex}
+                    onChange={(e) => setNoindex(e.target.checked)}
+                    className="rounded border-gray-300"
+                  />{" "}
+                  Noindex
+                </label>
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={nofollow}
+                    onChange={(e) => setNofollow(e.target.checked)}
+                    className="rounded border-gray-300"
+                  />{" "}
+                  Nofollow
+                </label>
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={cornerstone}
+                    onChange={(e) => setCornerstone(e.target.checked)}
+                    className="rounded border-gray-300"
+                  />{" "}
+                  Cornerstone
+                </label>
+              </div>
+            </div>
+          </aside>
+        </div>
+
+        {/* Modal AI inline */}
+        {aiOpen && (
+          <AIModalInline
+            open={aiOpen}
+            defaultTopic={title || ""}
+            onClose={() => setAiOpen(false)}
+            onApply={(data) => {
+              if (data.title) setTitle(data.title);
+              if (data.excerpt) setExcerpt(data.excerpt);
+              if (data.contentHtml) setContentHtml(data.contentHtml);
+              if (data.seoTitle) setSeoTitle(data.seoTitle);
+              if (data.focusKw) setFocusKw(data.focusKw);
+              if (data.canonical) setCanonical(data.canonical);
+              if (data.featuredMediaUrl) setFeaturedUrl(data.featuredMediaUrl);
+            }}
+          />
+        )}
+      </main>
+    </>
+  );
+}
+
+/* ===========================
+   AIModalInline (semplice)
+   =========================== */
+function AIModalInline(props: {
+  open: boolean;
+  defaultTopic?: string;
+  onClose: () => void;
+  onApply: (data: {
+    title?: string;
+    excerpt?: string;
+    contentHtml?: string;
+    seoTitle?: string;
+    focusKw?: string;
+    canonical?: string;
+    featuredMediaUrl?: string;
+  }) => void;
+}) {
+  const { open, defaultTopic = "", onClose, onApply } = props;
+  const [topic, setTopic] = React.useState(defaultTopic);
+  const [loading, setLoading] = React.useState(false);
+  const [err, setErr] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (open) {
+      setTopic(defaultTopic);
+      setErr(null);
+    }
+  }, [open, defaultTopic]);
+
+  if (!open) return null;
+
+  async function generate() {
+    try {
+      setLoading(true);
+      setErr(null);
+      const res = await fetch("/api/ai/generate-article", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          status,
-          title: form.title,
-          excerpt: form.excerpt,
-          content: form.contentHtml,
-          categories: form.categories,
-          tags: tagIds,
-          featured_media: form.featuredMediaId,
-          // Yoast
-          seoTitle: form.seoTitle || form.title,
-          metaDesc: form.excerpt,
-          focusKw: form.focusKw,
-          canonical: form.canonical,
-          primaryCategoryId: form.primaryCategoryId,
-          noindex: !!form.noindex,
-          nofollow: !!form.nofollow,
-          isCornerstone: !!form.isCornerstone,
-        }),
+        body: JSON.stringify({ topic }),
       });
-
-      const raw = await res.text();
-      let data: any = null;
-      try {
-        data = raw ? JSON.parse(raw) : null;
-      } catch {
-        data = null;
-      }
-
-      if (!res.ok) {
-        const msg =
-          (data && (data.error || data.message)) ||
-          raw ||
-          `HTTP ${res.status} ${res.statusText}`;
-        alert(`Salvataggio fallito: ${msg}`);
-        return;
-      }
-
-      setForm(emptyForm);
-      const go = window.confirm(
-        status === "publish"
-          ? "Articolo pubblicato! Vuoi vedere gli articoli?"
-          : "Bozza salvata! Vuoi vedere le bozze?"
-      );
-      if (go) window.location.href = "/posts";
-    } catch (err: any) {
-      alert(`Errore di rete: ${err?.message || err}`);
+      const txt = await res.text();
+      const data = txt ? JSON.parse(txt) : {};
+      onApply({
+        title: data.title,
+        excerpt: data.excerpt,
+        contentHtml: data.contentHtml,
+        seoTitle: data.seoTitle,
+        focusKw: data.focusKw,
+        canonical: data.canonical,
+        featuredMediaUrl: data.featuredMediaUrl,
+      });
+      onClose();
+    } catch (e: any) {
+      setErr(e?.message || "Errore generazione");
     } finally {
       setLoading(false);
     }
   }
 
-  function onClear() {
-    if (confirm("Sicuro di ripulire il form?")) setForm(emptyForm);
-  }
-
-  function addTag(name: string) {
-    const t = name.trim();
-    if (!t) return;
-    setForm((s) => (s.tags.includes(t) ? s : { ...s, tags: [...s.tags, t] }));
-    setTagQuery("");
-    setShowTagSug(false);
-  }
-  function removeTag(name: string) {
-    setForm((s) => ({ ...s, tags: s.tags.filter((t) => t !== name) }));
-  }
-
   return (
-    <div className="p-6 space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* COLONNA SINISTRA */}
-        <div className="lg:col-span-2 space-y-6">
-          <div className="bg-white rounded-xl shadow p-4">
-            <label className="block text-sm font-medium mb-1">Titolo (H1)</label>
-            <input
-              type="text"
-              value={form.title}
-              onChange={(e) => setForm((s) => ({ ...s, title: e.target.value }))}
-              placeholder="Titolo dell'articolo"
-              className="w-full border rounded-lg px-3 py-2"
-            />
-          </div>
-
-          <div className="bg-white rounded-xl shadow p-4">
-            <label className="block text-sm font-medium mb-1">
-              Estratto / Meta description
-            </label>
-            <textarea
-              value={form.excerpt}
-              onChange={(e) => setForm((s) => ({ ...s, excerpt: e.target.value }))}
-              rows={3}
-              placeholder="Breve riassunto (80–160 caratteri consigliati)…"
-              className="w-full border rounded-lg px-3 py-2"
-            />
-          </div>
-
-          <div className="bg-white rounded-xl shadow p-4">
-            <label className="block text-sm font-medium mb-2">Contenuto</label>
-            <TinyEditor
-              value={form.contentHtml}
-              onChange={(html) => setForm((s) => ({ ...s, contentHtml: html }))}
-              height={900}
-              placeholder="Scrivi qui il contenuto…"
-            />
-          </div>
-
-          {/* TAG + KEYPHRASE */}
-          <div className="bg-white rounded-xl shadow p-4">
-            <div className="mb-4">
-              <div className="text-sm font-medium mb-2">Tag</div>
-              <div className="relative">
-                <div className="flex flex-wrap gap-2 mb-2">
-                  {form.tags.map((t) => (
-                    <span
-                      key={t}
-                      className="inline-flex items-center gap-2 px-2 py-1 rounded-full text-sm border bg-gray-50"
-                    >
-                      {t}
-                      <button
-                        type="button"
-                        className="text-gray-500 hover:text-gray-700"
-                        onClick={() => removeTag(t)}
-                        aria-label={`Rimuovi tag ${t}`}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-                <input
-                  type="text"
-                  value={tagQuery}
-                  onChange={(e) => {
-                    setTagQuery(e.target.value);
-                    setShowTagSug(true);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      addTag(tagQuery);
-                    }
-                  }}
-                  placeholder="Aggiungi tag e premi Invio…"
-                  className="w-full border rounded-lg px-3 py-2"
-                />
-                {showTagSug && tagSuggestions.length > 0 && (
-                  <div className="absolute z-10 mt-1 w-full bg-white border rounded-lg shadow">
-                    {tagSuggestions.map((s) => (
-                      <button
-                        type="button"
-                        key={s.id}
-                        className="block w-full text-left px-3 py-2 hover:bg-gray-50"
-                        onClick={() => addTag(s.name)}
-                      >
-                        {s.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <p className="text-xs text-gray-500 mt-2">
-                Suggerimento: 4–8 tag pertinenti aiutano l’organizzazione e la SEO.
-              </p>
-            </div>
-
-            <div className="border-t pt-4">
-              <label className="block text-sm font-medium mb-1">
-                Focus keyphrase (Yoast)
-              </label>
-              <input
-                type="text"
-                value={form.focusKw}
-                onChange={(e) => setForm((s) => ({ ...s, focusKw: e.target.value }))}
-                placeholder="Parola/frase chiave principale…"
-                className="w-full border rounded-lg px-3 py-2"
-              />
-            </div>
-          </div>
+    <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4">
+      <div className="w-full max-w-xl rounded-xl bg-white shadow p-4">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-lg font-semibold">Genera con AI</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+            ✕
+          </button>
         </div>
-
-        {/* SIDEBAR DESTRA */}
-        <div className="space-y-6">
-          {/* Pulsanti */}
-          <div className="bg-white rounded-xl shadow p-4 flex flex-wrap gap-2">
-            <button
-              type="button"
-              className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
-              onClick={() => setAiOpen(true)}
-            >
-              Genera con AI
-            </button>
-            <button
-              type="button"
-              className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
-              onClick={handlePreview}
-            >
-              Anteprima
-            </button>
-            <button
-              type="button"
-              disabled={loading}
-              className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 disabled:opacity-60"
-              onClick={() => submitToWP("draft")}
-            >
-              Salva bozza
-            </button>
-            <button
-              type="button"
-              disabled={!canPublish || loading}
-              className="px-3 py-2 rounded-lg bg-black text-white hover:bg-gray-800 disabled:opacity-60"
-              onClick={() => submitToWP("publish")}
-            >
-              Pubblica
-            </button>
-            <button
-              type="button"
-              className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50"
-              onClick={onClear}
-            >
-              Pulisci
-            </button>
-          </div>
-
-          {/* Immagine in evidenza */}
-          <div className="bg-white rounded-xl shadow p-4">
-            <div className="text-sm font-medium mb-2">Immagine in evidenza</div>
-
-            <MediaPickerBridge
-              onPicked={(att) =>
-                setForm((s) => ({
-                  ...s,
-                  featuredMediaId: att.id,
-                  featuredMediaUrl: att.url,
-                }))
-              }
-            />
-
-            <div className="flex flex-col gap-3">
-              {form.featuredMediaUrl ? (
-                <div className="relative">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={form.featuredMediaUrl}
-                    alt="Immagine in evidenza"
-                    className="w-full rounded-lg border object-cover max-h-60"
-                  />
-                  <div className="mt-2 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setForm((s) => ({
-                          ...s,
-                          featuredMediaId: undefined,
-                          featuredMediaUrl: undefined,
-                        }))
-                      }
-                      className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 text-sm"
-                    >
-                      Rimuovi immagine
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openWpMediaPicker()}
-                      className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 text-sm"
-                    >
-                      Cambia dalla Libreria Media
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="w-full h-32 border rounded-lg flex items-center justify-center text-sm text-gray-500 bg-gray-50">
-                    Nessuna immagine
-                  </div>
-                  <div className="flex gap-2">
-                    <label className="inline-flex items-center px-3 py-2 border rounded-lg cursor-pointer bg-white hover:bg-gray-50 text-sm">
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(e) => {
-                          const f = e.target.files?.[0];
-                          if (f) handleUploadFeatured(f);
-                        }}
-                      />
-                      Carica immagine
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => openWpMediaPicker()}
-                      className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50 text-sm"
-                    >
-                      Seleziona dalla Libreria Media
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* Categorie */}
-          <div className="bg-white rounded-xl shadow p-4">
-            <div className="text-sm font-medium mb-2">Categorie</div>
-            <div className="flex flex-wrap gap-2">
-              {cats.map((c) => {
-                const active = form.categories.includes(c.id);
-                return (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => toggleCategory(c.id)}
-                    className={`px-2 py-1 rounded-full border text-sm ${
-                      active
-                        ? "bg-blue-600 border-blue-600 text-white"
-                        : "bg-white hover:bg-gray-50"
-                    }`}
-                    title={c.slug}
-                  >
-                    {c.name}
-                  </button>
-                );
-              })}
-              {cats.length === 0 && (
-                <div className="text-sm text-gray-500">Nessuna categoria disponibile.</div>
-              )}
-            </div>
-          </div>
-
-          {/* Assistente SEO */}
-          <div className="bg-white rounded-xl shadow p-4">
-            <div className="text-sm font-medium mb-3">Assistente SEO</div>
-            <SeoAssistant
-              title={form.title}
-              slug={slugify(form.title || "")}
-              contentHtml={form.contentHtml}
-              seoTitle={form.title}
-              seoDescription={form.excerpt}
-              focusKw={form.focusKw}
-            />
-            <div className="mt-4">
-              <SerpPreview
-                title={form.seoTitle || form.title || "Titolo dell'articolo"}
-                description={form.excerpt || "Anteprima della meta description…"}
-                url="https://alburninet.it/articolo-di-prova"
-              />
-            </div>
-          </div>
-
-          {/* SEO avanzato */}
-          <div className="bg-white rounded-xl shadow p-4">
-            <div className="text-sm font-medium mb-3">SEO avanzato</div>
-
-            <label className="block text-sm mb-1">Titolo SEO (opzionale)</label>
-            <input
-              type="text"
-              value={form.seoTitle || ""}
-              onChange={(e) => setForm((s) => ({ ...s, seoTitle: e.target.value }))}
-              placeholder="Se vuoto usa il Titolo"
-              className="w-full border rounded-lg px-3 py-2 mb-3"
-            />
-
-            <label className="block text-sm mb-1">Canonical URL</label>
-            <input
-              type="url"
-              value={form.canonical || ""}
-              onChange={(e) => setForm((s) => ({ ...s, canonical: e.target.value }))}
-              placeholder="https://esempio.it/articolo"
-              className="w-full border rounded-lg px-3 py-2 mb-3"
-            />
-
-            <label className="block text-sm mb-1">Categoria primaria</label>
-            <select
-              value={form.primaryCategoryId ?? ""}
-              onChange={(e) =>
-                setForm((s) => ({
-                  ...s,
-                  primaryCategoryId: e.target.value ? Number(e.target.value) : undefined,
-                }))
-              }
-              className="w-full border rounded-lg px-3 py-2 mb-3"
-            >
-              <option value="">(nessuna: lascia a Yoast)</option>
-              {form.categories.map((cid) => {
-                const c = cats.find((x) => x.id === cid);
-                if (!c) return null;
-                return (
-                  <option key={cid} value={cid}>
-                    {c.name}
-                  </option>
-                );
-              })}
-            </select>
-
-            <div className="flex items-center gap-4">
-              <label className="inline-flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={!!form.noindex}
-                  onChange={(e) => setForm((s) => ({ ...s, noindex: e.target.checked }))}
-                />
-                Noindex
-              </label>
-              <label className="inline-flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={!!form.nofollow}
-                  onChange={(e) => setForm((s) => ({ ...s, nofollow: e.target.checked }))}
-                />
-                Nofollow
-              </label>
-              <label className="inline-flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={!!form.isCornerstone}
-                  onChange={(e) => setForm((s) => ({ ...s, isCornerstone: e.target.checked }))}
-                />
-                Cornerstone
-              </label>
-            </div>
-          </div>
+        <label className="block text-sm text-gray-700 mb-1">Argomento</label>
+        <input
+          type="text"
+          value={topic}
+          onChange={(e) => setTopic(e.target.value)}
+          placeholder="Inserisci l’argomento di partenza…"
+          className="w-full rounded-lg border border-gray-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-black/5"
+        />
+        {err && <p className="mt-2 text-sm text-red-600">{err}</p>}
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-2 rounded-lg border bg-white hover:bg-gray-50">
+            Annulla
+          </button>
+          <button
+            onClick={generate}
+            disabled={loading}
+            className="px-3 py-2 rounded-lg bg-black text-white hover:bg-black/90 disabled:opacity-50"
+          >
+            {loading ? "Generazione…" : "Genera"}
+          </button>
         </div>
       </div>
-
-      {/* MODAL AI */}
-      <AiGenerateModal
-        open={aiOpen}
-        onClose={() => setAiOpen(false)}
-        onApply={(data) => {
-          setForm((s) => ({
-            ...s,
-            title: data.title || s.title,
-            seoTitle: data.seoTitle || data.title || s.seoTitle,
-            excerpt: data.excerpt || s.excerpt,
-            focusKw: data.focusKw || s.focusKw,
-            contentHtml: data.contentHtml || s.contentHtml,
-            tags:
-              data.tags?.length
-                ? Array.from(new Set([...(s.tags || []), ...data.tags]))
-                : s.tags,
-          }));
-        }}
-      />
     </div>
   );
 }
